@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ heading }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&family=Montserrat:wght@700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+    <style>
+        body {
+            background: linear-gradient(135deg, #1a1a2e 0%, #0f0f1f 100%);
+            font-family: 'Poppins', sans-serif;
+            color: #ffffff;
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .header {
+            width: 100%;
+            background: rgba(26, 26, 46, 0.9);
+            backdrop-filter: blur(10px);
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+            box-sizing: border-box;
+        }
+        .logo {
+            font-family: 'Montserrat', sans-serif;
+            font-size: 24px;
+            color: #00d4ff;
+            font-weight: 700;
+        }
+        .file-name {
+            font-size: 18px; color: #b0b0b0; max-width: 50%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .container {
+            max-width: 1200px;
+            width: 100%;
+            padding: 20px;
+            box-sizing: border-box;
+            flex: 1;
+        }
+        .player-container {
+            background: #0f0f1f;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+            margin-bottom: 30px;
+        }
+        .player { width: 100%; height: auto; display: block; }
+        .buttons-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px; margin: 20px 0;
+        }
+        button {
+            padding: 15px;
+            background: linear-gradient(45deg, #00d4ff, #ff2e63);
+            color: #ffffff; font-family: 'Poppins', sans-serif;
+            font-size: 16px; font-weight: 600;
+            border: none; border-radius: 10px; cursor: pointer;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            display: flex; align-items: center; justify-content: center; gap: 10px;
+        }
+        button:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 5px 15px rgba(0, 212, 255, 0.5);
+        }
+        footer {
+            text-align: center; padding: 20px;
+            background: rgba(26, 26, 46, 0.9);
+            color: #b0b0b0; font-size: 14px;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">File Streamer</div>
+        <div class="file-name">{{ file_name }}</div>
+    </div>
+    <div class="container">
+        <div class="player-container">
+            <video id="player" class="player" src="{{ stream_url }}" playsinline controls preload="metadata"></video>
+        </div>
+        <div class="buttons-grid">
+            <button onclick="openExternalPlayer('vlc')"><i class="fas fa-play"></i> Watch in VLC</button>
+            <button onclick="openExternalPlayer('mx')"><i class="fas fa-play"></i> Watch in MX Player</button>
+            <button onclick="openExternalPlayer('playit')"><i class="fas fa-play"></i> Watch in Playit</button>
+            <button onclick="openExternalPlayer('xplayer')"><i class="fas fa-play"></i> Watch in X Player</button>
+            <button onclick="downloadVideo()"><i class="fas fa-download"></i> Direct Download</button>
+        </div>
+    </div>
+    <footer>
+        &copy; 2025 Your Bot Name. All rights reserved.
+    </footer>
+    <script>
+        const streamUrl = "{{ stream_url }}";
+        const downloadUrl = "{{ download_url }}"; 
+
+        function downloadVideo() {
+            window.location.href = downloadUrl;
+        }
+
+        function openExternalPlayer(player) {
+            const httpUrl = streamUrl.replace(/^https?:\/\//, 'http://');
+            const urlWithoutScheme = httpUrl.substring(7);
+            const scheme = 'http';
+            let intentUrl;
+
+            switch(player) {
+                case 'vlc':
+                    intentUrl = `intent://${urlWithoutScheme}#Intent;package=org.videolan.vlc;type=video/*;scheme=${scheme};action=android.intent.action.VIEW;end`;
+                    break;
+                case 'mx':
+                    intentUrl = `intent://${urlWithoutScheme}#Intent;package=com.mxtech.videoplayer.ad;type=video/*;scheme=${scheme};action=android.intent.action.VIEW;end`;
+                    break;
+                case 'playit':
+                    intentUrl = `intent://${urlWithoutScheme}#Intent;package=com.playit.videoplayer;type=video/*;scheme=${scheme};action=android.intent.action.VIEW;end`;
+                    break;
+                case 'xplayer':
+                    intentUrl = `intent://${urlWithoutScheme}#Intent;package=video.player.videoplayer;type=video/*;scheme=${scheme};action=android.intent.action.VIEW;end`;
+                    break;
+                default:
+                    return;
+            }
+            window.location.href = intentUrl;
+        }
+    </script>
+</body>
+</html>

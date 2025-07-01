@@ -1,0 +1,18 @@
+# requirements.txt (Updated)
+
+pyrogram==2.0.106
+tgcrypto
+motor
+aiohttp
+beautifulsoup4
+pyromod
+# New libraries for fuzzy matching
+thefuzz==0.22.1
+python-Levenshtein==0.25.1
+# New libraries for streaming functionality
+jinja2
+aiofiles
+python-dotenv
+pymongo
+# New library for advanced filename parsing
+parse-torrent-name
