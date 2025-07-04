@@ -12,6 +12,7 @@ from database.db import (
     get_user, save_file_data, get_post_channel, get_index_db_channel
 )
 from utils.helpers import create_post, get_title_key, notify_and_remove_invalid_channel
+from thefuzz import fuzz
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()])
@@ -134,15 +135,23 @@ class Bot(Client):
                 self.open_batches.setdefault(user_id, {})
                 loop = asyncio.get_event_loop()
                 
-                # Use the cleaned title_key directly to find the batch
-                if title_key in self.open_batches[user_id]:
-                    logger.info(f"File '{filename}' matches existing batch '{title_key}'.")
-                    batch_data = self.open_batches[user_id][title_key]
+                # Fuzzy matching to find a similar batch
+                matched_batch_key = None
+                highest_similarity = 75  # Set a minimum threshold for matching
+                for existing_key in self.open_batches.get(user_id, {}):
+                    similarity = fuzz.ratio(title_key, existing_key)
+                    if similarity > highest_similarity:
+                        highest_similarity = similarity
+                        matched_batch_key = existing_key
+                
+                if matched_batch_key:
+                    logger.info(f"File '{filename}' matches existing batch '{matched_batch_key}' with similarity {highest_similarity}%.")
+                    batch_data = self.open_batches[user_id][matched_batch_key]
                     batch_data['messages'].append(copied_message)
                     
                     # Reset the timer
                     if batch_data.get('timer'): batch_data['timer'].cancel()
-                    batch_data['timer'] = loop.call_later(10, lambda bk=title_key: asyncio.create_task(self._finalize_batch(user_id, bk)))
+                    batch_data['timer'] = loop.call_later(10, lambda bk=matched_batch_key: asyncio.create_task(self._finalize_batch(user_id, bk)))
                 else:
                     logger.info(f"No matching batch found. Creating new batch with key: '{title_key}'")
                     self.open_batches[user_id][title_key] = {
