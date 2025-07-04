@@ -14,4 +14,5 @@ python-dotenv
 pymongo
 # New library for advanced filename parsing
 parse-torrent-name
-googlesearch-python
+# For IMDb data
+cinemagoer
