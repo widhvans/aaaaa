@@ -5,7 +5,7 @@ class Config:
     API_ID = int(os.environ.get("API_ID", "27461953"))
     API_HASH = os.environ.get("API_HASH", "8a19a6a007044ff7b41ada4b377cdfba")
 
-    # Your Bot Token
+    # Your Bot Token 
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "7597095551:AAGkyB97-MSH0pzbVRewyGsXgRpgiC64xL0")
 
     # Your Admin User ID
