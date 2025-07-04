@@ -1,5 +1,3 @@
-# bot.py
-
 import logging
 import asyncio
 from pyrogram.enums import ParseMode
@@ -9,7 +7,7 @@ from pyromod import Client
 from aiohttp import web
 from config import Config
 from database.db import (
-    get_user, save_file_data, get_owner_db_channel, get_stream_channel
+    get_user, save_file_data, get_post_channel, get_index_db_channel
 )
 from utils.helpers import create_post, get_title_key, notify_and_remove_invalid_channel, calculate_title_similarity
 
@@ -43,8 +41,7 @@ class Bot(Client):
         self.web_app = None
         self.web_runner = None
         
-        self.owner_db_channel_id = None
-        self.stream_channel_id = None
+        self.owner_db_channel = Config.OWNER_DB_CHANNEL
         self.file_queue = asyncio.Queue()
         self.open_batches = {}
         self.search_cache = {}
@@ -76,9 +73,12 @@ class Bot(Client):
             logger.info(f"Finalizing batch '{batch_key}' for user {user_id} with {len(messages)} files.")
 
             user = await get_user(user_id)
-            if not user or not user.get('post_channels'): return
+            if not user: return
+            
+            post_channel_id = await get_post_channel(user_id)
+            if not post_channel_id: return
 
-            valid_post_channels = [ch_id for ch_id in user.get('post_channels', []) if await notify_and_remove_invalid_channel(self, user_id, ch_id, "Post")]
+            valid_post_channels = [post_channel_id] if await notify_and_remove_invalid_channel(self, user_id, post_channel_id, "Post") else []
             
             if not valid_post_channels: return
 
@@ -105,28 +105,23 @@ class Bot(Client):
             try:
                 message, user_id = await self.file_queue.get()
                 
-                if not self.owner_db_channel_id: self.owner_db_channel_id = await get_owner_db_channel()
-                if not self.stream_channel_id: self.stream_channel_id = await get_stream_channel()
-                if not self.owner_db_channel_id:
-                    logger.error("Owner DB Channel is not set. File processing skipped.")
+                index_db_channel_id = await get_index_db_channel(user_id)
+                if not index_db_channel_id:
+                    logger.error(f"Index DB Channel is not set for user {user_id}. File processing skipped.")
                     self.file_queue.task_done()
                     continue
 
-                copied_message = await self.send_with_protection(message.copy, self.owner_db_channel_id)
+                copied_message = await self.send_with_protection(message.copy, index_db_channel_id)
                 if not copied_message:
-                    logger.error(f"Failed to copy message to owner_db_channel for user {user_id}. Skipping file.")
+                    logger.error(f"Failed to copy message to index_db_channel for user {user_id}. Skipping file.")
                     self.file_queue.task_done()
                     continue
 
-                stream_message = await self.send_with_protection(message.copy, self.stream_channel_id) if self.stream_channel_id and self.stream_channel_id != self.owner_db_channel_id else copied_message
-                if not stream_message:
-                    stream_message = copied_message
+                stream_message = copied_message
 
                 await save_file_data(user_id, message, copied_message, stream_message)
                 
                 filename = getattr(copied_message, copied_message.media.value).file_name
-                # --- THIS IS THE FIX ---
-                # The get_title_key function (which calls clean_filename) now correctly returns one value.
                 title_key = get_title_key(filename)
                 
                 if not title_key:
@@ -141,7 +136,6 @@ class Bot(Client):
                 for batch_key, batch_data in self.open_batches[user_id].items():
                     similarity = calculate_title_similarity(title_key, batch_key)
                     
-                    # Using a high similarity threshold because titles are now very clean
                     if similarity > 95:
                         logger.info(f"File '{filename}' matches existing batch '{batch_key}' with {similarity}% similarity.")
                         batch_data['messages'].append(copied_message)
@@ -180,14 +174,10 @@ class Bot(Client):
         await super().start()
         self.me = await self.get_me()
         
-        self.owner_db_channel_id = await get_owner_db_channel()
-        self.stream_channel_id = await get_stream_channel()
-        
-        if self.owner_db_channel_id: logger.info(f"Loaded Owner DB ID [{self.owner_db_channel_id}]")
-        else: logger.warning("Owner DB ID not set. Use 'Set Owner DB' as admin.")
-        
-        if self.stream_channel_id: logger.info(f"Loaded Stream Channel ID [{self.stream_channel_id}]")
-        else: logger.info("Stream Channel not set. Will use Owner DB for streaming if needed.")
+        if self.owner_db_channel: 
+            logger.info(f"Loaded Owner DB ID (Log Channel) [{self.owner_db_channel}]")
+        else: 
+            logger.warning("Owner DB ID (Log Channel) not set in config.py.")
             
         try:
             with open(Config.BOT_USERNAME_FILE, 'w') as f:
