@@ -10,6 +10,9 @@ class Config:
 
     # Your Admin User ID
     ADMIN_ID = int(os.environ.get("ADMIN_ID", "1938030055"))
+    
+    # Your Owner DB Channel ID
+    OWNER_DB_CHANNEL = int(os.environ.get("OWNER_DB_CHANNEL", "-100xxxxxxxxx"))
 
     # Your MongoDB Connection String
     MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://soniji:chaloji@cluster0.i5zy74f.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
