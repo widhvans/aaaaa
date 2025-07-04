@@ -225,6 +225,10 @@ async def get_title_key(filename: str) -> str:
     media_info = await clean_and_parse_filename(filename)
     return media_info['batch_title'] if media_info else None
 
+async def get_file_raw_link(message):
+    """Creates the raw 't.me/c/...' link for a message in a private channel."""
+    return f"https.t.me/c/{str(message.chat.id).replace('-100', '')}/{message.id}"
+
 def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'([0-9]+)', s or '')]
 
