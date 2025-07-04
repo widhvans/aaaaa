@@ -4,9 +4,8 @@ import re
 import base64
 import logging
 import PTN
-import aiohttp
-from bs4 import BeautifulSoup
-from googlesearch import search
+import asyncio
+from imdb import Cinemagoer
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserNotParticipant, ChatAdminRequired, ChannelInvalid, PeerIdInvalid, ChannelPrivate
 from config import Config
@@ -18,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 PHOTO_CAPTION_LIMIT = 1024
 TEXT_MESSAGE_LIMIT = 4096
+
+# Initialize the Cinemagoer instance
+ia = Cinemagoer()
 
 def format_bytes(size):
     """Converts bytes to a human-readable format with custom rounding."""
@@ -33,55 +35,25 @@ def format_bytes(size):
     elif n == 2: return f"{round(size)} {power_labels[n]}"
     else: return f"{int(size)} {power_labels[n]}"
 
-async def get_definitive_title_from_search(refined_title, year):
+async def get_definitive_title_from_imdb(refined_title):
     """
-    Uses a web search to find the official title from IMDb.
+    Uses the cinemagoer library to find the official title and year from IMDb.
     """
     if not refined_title:
-        return refined_title
+        return None, None
     try:
-        query = f'"{refined_title}" {year if year else ""} movie imdb'
-        
-        # We'll run the search in a separate thread to avoid blocking the event loop
-        import asyncio
-        loop = asyncio.get_event_loop()
-        
-        def search_sync():
-            return list(search(query, stop=1, pause=2))
-            
-        urls = await loop.run_in_executor(None, search_sync)
-
-        for url in urls:
-            if "imdb.com/title/" in url:
-                try:
-                    headers = {'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US,en;q=0.5'}
-                    async with aiohttp.ClientSession(headers=headers) as session:
-                        async with session.get(url, timeout=10) as response:
-                            if response.status == 200:
-                                soup = BeautifulSoup(await response.text(), 'html.parser')
-                                
-                                title_element = soup.select_one('h1[data-testid="hero-title-block__title"]')
-                                if title_element:
-                                    title = title_element.get_text(strip=True)
-                                    
-                                    year_element = soup.select_one('a[href*="/releaseinfo"]')
-                                    if year_element:
-                                        year_text = year_element.get_text(strip=True)
-                                        if year_text.isdigit() and len(year_text) == 4:
-                                            logger.info(f"Web verification successful. Found definitive title: '{title} ({year_text})'")
-                                            return f"{title} ({year_text})"
-                                    
-                                    logger.info(f"Web verification successful. Found definitive title: '{title}'")
-                                    return title
-
-                except Exception as e:
-                    logger.error(f"Error fetching/parsing IMDb page: {e}")
-                    continue
+        # Search for the movie
+        movies = await asyncio.to_thread(ia.search_movie, refined_title)
+        if movies:
+            movie = movies[0]
+            # Fetch the full movie details
+            await asyncio.to_thread(ia.update, movie)
+            title = movie.get('title')
+            year = movie.get('year')
+            return title, year
     except Exception as e:
-        logger.error(f"Error during web search for definitive title: {e}")
-
-    logger.warning(f"Web verification failed, falling back to refined title: '{refined_title}'")
-    return refined_title
+        logger.error(f"Error fetching data from IMDb: {e}")
+    return None, None
 
 async def clean_and_parse_filename(name: str):
     """
@@ -168,15 +140,20 @@ async def clean_and_parse_filename(name: str):
 
     # --- Stage 3: Web Verification for Definitive Title ---
     
-    definitive_title = await get_definitive_title_from_search(refined_title, year)
+    definitive_title, definitive_year = await get_definitive_title_from_imdb(refined_title)
     
     # --- Stage 4: Assemble Final Data ---
     
-    batch_title = f"{definitive_title} {season_str}".strip() if is_series else definitive_title
+    if definitive_title:
+        batch_title = f"{definitive_title} {season_str}".strip() if is_series else definitive_title
+        year_to_use = definitive_year
+    else:
+        batch_title = f"{refined_title} {season_str}".strip() if is_series else refined_title
+        year_to_use = year
 
     media_info = {
         "batch_title": batch_title,
-        "year": year,
+        "year": year_to_use,
         "is_series": is_series,
         "season_info": season_str,
         "episode_info": episode_str,
