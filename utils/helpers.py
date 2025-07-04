@@ -33,38 +33,44 @@ def format_bytes(size):
 def clean_and_parse_filename(name: str):
     """
     The definitive, final, intelligent parsing engine.
-    It uses a two-stage process (PTN then Regex) to extract structured info.
-    Returns a dictionary of media info or None for junk files.
+    It uses a two-stage process (PTN then Regex) to extract structured info,
+    differentiating between movies and series for perfect formatting.
     """
     if 'sample' in name.lower():
         logger.warning(f"Skipping sample file: {name}")
         return None
 
-    try:
-        # Use PTN as the first pass for structured data
-        parsed_info = PTN.parse(name.replace('.', ' ').replace('_', ' '))
-        base_title = parsed_info.get('title', '')
-        year = str(parsed_info.get('year')) if 'year' in parsed_info else None
-        is_series = 'season' in parsed_info and 'episode' in parsed_info
-        episode_info = f"S{str(parsed_info.get('season')).zfill(2)}E{str(parsed_info.get('episode')).zfill(2)}" if is_series else ''
-        
-        # Manually extract all quality tags using a robust regex
-        all_tags = re.findall(r'\b(1080p|720p|480p|540p|WEB-DL|WEBRip|BluRay|HDTC|x264|x265|AAC|Dual[\s-]?Audio|HEVC)\b', name, re.IGNORECASE)
-        quality_tags = " | ".join(sorted(list(set(tag.replace(' ', '') for tag in all_tags)), key=lambda x: x.lower()))
+    # --- Start of new, improved parsing logic ---
+    original_name = name.replace('.', ' ').replace('_', ' ')
+    
+    # Use PTN as a base, but we will override and improve it
+    parsed_info = PTN.parse(original_name)
+    
+    # Reliable series detection
+    series_match = re.search(r'[Ss]([0-9]+)[\s.]?[Ee]([0-9]+(?:[\s.-]?[Ee]?[0-9]+)?)?', original_name)
+    is_series = bool(series_match)
+    
+    # Extract all possible tags using a comprehensive regex
+    all_tags = re.findall(r'\b(1080p|720p|480p|540p|WEB-DL|WEBRip|BluRay|HDTC|x264|x265|AAC|Dual[\s-]?Audio|Hindi|English|ESub|HEVC)\b', name, re.IGNORECASE)
+    quality_tags = " | ".join(sorted(list(set(tag.replace(' ', '') for tag in all_tags)), key=lambda x: x.lower()))
 
-    except Exception:
-        parsed_info = {}
-        base_title = name
-        year, is_series, episode_info, quality_tags = None, False, '', ''
+    # Title cleaning
+    base_title = parsed_info.get('title', original_name)
+    year = str(parsed_info.get('year')) if 'year' in parsed_info else None
 
-    # Aggressive cleaning for the batch title
+    # Clean the base title by removing everything PTN found
+    for key, value in parsed_info.items():
+        if key != 'title' and isinstance(value, str):
+            base_title = base_title.replace(value, '')
+
+    # Aggressive junk word removal for a cleaner batch title
     JUNK_WORDS = [
         'hindi', 'english', 'eng', 'tamil', 'telugu', 'malayalam', 'kannada', 'bengali', 'marathi',
         'gujarati', 'punjabi', 'bhojpuri', 'urdu', 'nepali', 'spanish', 'chinese', 'korean', 'japanese',
         'dual audio', 'multi audio', 'org', 'original', 'hindi dubbed', 'eng sub', 'dub', 'subs', 'tam', 'tel', 'hin',
         'uncut', 'unrated', 'extended', 'remastered', 'final', 'true', 'proper', 'hq', 'br-rip', 'line',
         'full movie', 'full video', 'watch online', 'download', 'complete', 'combined', 'web series', 'completed',
-        'uplay', 'psa', 'esubs', 'esub', 'msubs', 'hevc', 'ep', 's0', 'cinevood',
+        'uplay', 'psa', 'esubs', 'esub', 'msubs', 'hevc', 'cinevood',
         'privatemoviez', 'unratedhd', 'imdbmedia', 'khwaab', 'hdri', 'hdtc', 'webr', 'web-dl'
     ]
     
@@ -72,25 +78,30 @@ def clean_and_parse_filename(name: str):
     junk_regex = r'\b(' + '|'.join(re.escape(word) for word in JUNK_WORDS) + r')\b'
     cleaned_title = re.sub(junk_regex, '', cleaned_title, flags=re.I)
     
+    # Final cleanup
     cleaned_title = re.sub(r'[\(\[\{].*?[\)\]\}]|(@|\[@)\S+', '', cleaned_title)
-    cleaned_title = re.sub(r'\d{4}', '', cleaned_title) # Remove years from title
-    cleaned_title = re.sub(r'\d', '', cleaned_title) # Remove all numbers
-    cleaned_title = re.sub(r'[^a-z\s]', '', cleaned_title) # Remove non-alphabetic characters
+    cleaned_title = re.sub(r'\d{4}', '', cleaned_title) # Remove years
     cleaned_title = ' '.join(cleaned_title.split()).strip()
 
     if len(cleaned_title) < 2:
-        logger.warning(f"Filename '{name}' resulted in a junk title. Using original base title.")
         cleaned_title = base_title.strip()
 
+    # Structure the final output
+    season_str = f"S{str(series_match.group(1)).zfill(2)}" if is_series and series_match.group(1) else ""
+    episode_str = f"E{str(series_match.group(2)).zfill(2)}" if is_series and series_match.group(2) else ""
+    
+    batch_title = f"{cleaned_title.title()} {season_str}".strip() if is_series else cleaned_title.title()
+
     media_info = {
-        "batch_title": cleaned_title.title(),
-        "display_title": base_title.title(),
+        "batch_title": batch_title,
         "year": year,
         "is_series": is_series,
-        "episode_info": episode_info,
+        "season_info": season_str,
+        "episode_info": episode_str,
         "quality_tags": quality_tags
     }
     return media_info
+    # --- End of new parsing logic ---
 
 async def create_post(client, user_id, messages):
     user = await get_user(user_id)
@@ -112,10 +123,11 @@ async def create_post(client, user_id, messages):
     media_info_list.sort(key=lambda x: natural_sort_key(x.get('episode_info', '')))
 
     first_info = media_info_list[0]
+    # Use the perfectly cleaned batch_title for the main post heading
     primary_display_title, year = first_info['batch_title'], first_info['year']
     
     base_caption_header = f"🎬 **{primary_display_title} {f'({year})' if year else ''}**"
-    post_poster = await get_poster(primary_display_title, year) if user.get('show_poster', True) else None
+    post_poster = await get_poster(first_info['batch_title'], year) if user.get('show_poster', True) else None
     
     footer_buttons = user.get('footer_buttons', [])
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], btn['url'])] for btn in footer_buttons]) if footer_buttons else None
@@ -126,7 +138,8 @@ async def create_post(client, user_id, messages):
     
     all_link_entries = []
     for info in media_info_list:
-        display_tags = info['quality_tags']
+        # For series, display the episode number, otherwise just use the quality tags
+        display_tags = f"{info['episode_info']} | {info['quality_tags']}".strip(" | ") if info['is_series'] else info['quality_tags']
 
         composite_id = f"{user_id}_{info['file_unique_id']}"
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{composite_id}"
