@@ -49,7 +49,7 @@ def clean_and_parse_filename(name: str):
     season_str = ""
     episode_str = ""
     # This regex is designed to find SXXEXX, SXX EXX, Season XX Episode XX, etc.
-    series_match = re.search(r'(?:[Ss]eason|S)\s?(\d+)\s?(?:[Ee]pisode|[Ee])\s?(\d+(?:-\d+)?)', original_name, re.IGNORECASE)
+    series_match = re.search(r'(?:[Ss]eason|[Ss])\s?(\d+)\s?(?:[Ee]pisode|[Ee][Pp]?\.?)\s?([\d-]+)', original_name, re.IGNORECASE)
     if series_match:
         is_series = True
         season_num = int(series_match.group(1))
@@ -75,16 +75,21 @@ def clean_and_parse_filename(name: str):
 
     # --- Stage 2: Aggressive Title Cleaning ---
     
-    # Start with the full name and carve away the junk
-    cleaned_title = original_name
+    # Start with what PTN thinks is the title
+    ptn_info = PTN.parse(original_name)
+    cleaned_title = ptn_info.get('title', original_name)
 
-    # Remove all extracted information to isolate the title
-    if year: cleaned_title = cleaned_title.replace(year_match.group(0), '')
-    if is_series: cleaned_title = cleaned_title.replace(series_match.group(0), '')
+    # Be much more aggressive with cleaning
+    # Remove everything that we've already extracted
+    if year: cleaned_title = re.sub(r'(\d{4})', '', cleaned_title)
+    if is_series and series_match:
+        cleaned_title = re.sub(re.escape(series_match.group(0)), '', cleaned_title, flags=re.IGNORECASE)
+
+    # Remove all extracted tags from the title string
     for tag in found_tags:
         cleaned_title = re.sub(r'\b' + re.escape(tag) + r'\b', '', cleaned_title, flags=re.IGNORECASE)
     
-    # Remove junk words and symbols
+    # Remove remaining junk words and symbols
     JUNK_WORDS = ['completed', 'web series', 'mkv', 'esub']
     junk_regex = r'\b(' + '|'.join(re.escape(word) for word in JUNK_WORDS) + r')\b'
     cleaned_title = re.sub(junk_regex, '', cleaned_title, flags=re.I)
