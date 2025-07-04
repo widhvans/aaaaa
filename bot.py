@@ -124,7 +124,7 @@ class Bot(Client):
                 await save_file_data(user_id, message, copied_message, stream_message)
                 
                 filename = getattr(copied_message, copied_message.media.value).file_name
-                title_key = get_title_key(filename)
+                title_key = await get_title_key(filename)
                 
                 if not title_key:
                     logger.warning(f"Could not generate a title key for filename: {filename}")
