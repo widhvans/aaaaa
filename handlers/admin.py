@@ -5,8 +5,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import Config
 from database.db import (
     total_users_count, get_all_user_ids, get_storage_owners_count,
-    get_storage_owner_ids, get_normal_user_ids, delete_all_files,
-    set_post_channel, set_index_db_channel
+    get_storage_owner_ids, get_normal_user_ids, delete_all_files
 )
 from features.broadcaster import broadcast_message
 from utils.helpers import go_back_button
