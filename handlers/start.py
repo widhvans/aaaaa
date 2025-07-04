@@ -1,12 +1,10 @@
-# handlers/start.py (FINAL FIXED VERSION)
-
 import logging
 import re
 from pyrogram import Client, filters, enums
 from pyrogram.errors import UserNotParticipant, MessageNotModified, ChatAdminRequired, ChannelInvalid, PeerIdInvalid, ChannelPrivate
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from config import Config
-from database.db import add_user, get_file_by_unique_id, get_user, get_owner_db_channel, is_user_verified, claim_verification_for_file
+from database.db import add_user, get_file_by_unique_id, get_user, is_user_verified, claim_verification_for_file
 from utils.helpers import get_main_menu
 from features.shortener import get_shortlink
 
@@ -15,12 +13,12 @@ logger = logging.getLogger(__name__)
 
 @Client.on_message(filters.private & ~filters.command("start") & (filters.document | filters.video | filters.audio))
 async def handle_private_file(client, message):
-    if not client.owner_db_channel_id:
+    if not client.owner_db_channel:
         return await message.reply_text("The bot is not yet configured by the admin. Please try again later.")
     
     processing_msg = await message.reply_text("⏳ Processing your file...", quote=True)
     try:
-        copied_message = await message.copy(client.owner_db_channel_id)
+        copied_message = await message.copy(client.owner_db_channel)
         download_link = f"http://{client.vps_ip}:{client.vps_port}/download/{copied_message.id}"
         
         buttons = [[InlineKeyboardButton("📥 Fast Download", url=download_link)]]
@@ -46,10 +44,8 @@ async def send_file(client, requester_id, owner_id, file_unique_id):
             return await client.send_message(requester_id, "Sorry, this file is no longer available or the link is invalid.")
         
         owner_settings = await get_user(file_data['owner_id'])
-        storage_channel_id = await get_owner_db_channel()
-        if not storage_channel_id:
-            logger.error("Owner DB Channel not set, cannot send file.")
-            return await client.send_message(requester_id, "A configuration error occurred on the bot.")
+        if not owner_settings:
+             return await client.send_message(requester_id, "A configuration error occurred on the bot.")
 
         download_link = f"http://{client.vps_ip}:{client.vps_port}/download/{file_data['stream_id']}"
         
@@ -71,7 +67,7 @@ async def send_file(client, requester_id, owner_id, file_unique_id):
 
         await client.copy_message(
             chat_id=requester_id,
-            from_chat_id=storage_channel_id,
+            from_chat_id=Config.OWNER_DB_CHANNEL,
             message_id=file_data['file_id'],
             caption=caption,
             reply_markup=keyboard,
@@ -178,7 +174,6 @@ async def handle_public_file_request(client, message, requester_id, payload):
             logger.error(f"FSub channel error for owner {owner_id} (Channel: {fsub_channel}): {e}")
             pass 
     
-    # --- FIX: Reliably get the bot's username from the file ---
     try:
         with open(Config.BOT_USERNAME_FILE, 'r') as f:
             bot_username = f.read().strip().replace("@", "")
@@ -189,10 +184,8 @@ async def handle_public_file_request(client, message, requester_id, payload):
     if not bot_username:
         logger.error("FATAL: Bot username is empty in the file. Cannot create fallback link.")
         return await message.reply_text("Bot is not configured correctly. Please contact the admin.")
-    # --- END FIX ---
         
     composite_id = f"{owner_id}_{file_unique_id}"
-    # Use the reliably fetched username to build the link
     final_delivery_link = f"https://t.me/{bot_username}?start=finalget_{composite_id}"
     
     shortener_enabled = owner_settings.get('shortener_enabled', True)
