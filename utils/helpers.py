@@ -35,130 +35,85 @@ def format_bytes(size):
     elif n == 2: return f"{round(size)} {power_labels[n]}"
     else: return f"{int(size)} {power_labels[n]}"
 
-async def get_definitive_title_from_imdb(refined_title):
+async def get_definitive_title_from_imdb(title_from_filename):
     """
     Uses the cinemagoer library to find the official title and year from IMDb.
     """
-    if not refined_title:
+    if not title_from_filename:
         return None, None
     try:
-        # Search for the movie
-        movies = await asyncio.to_thread(ia.search_movie, refined_title)
-        if movies:
-            movie = movies[0]
-            # Fetch the full movie details
-            await asyncio.to_thread(ia.update, movie)
-            title = movie.get('title')
-            year = movie.get('year')
-            return title, year
+        # Search for the movie/series
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(None, lambda: ia.search_movie(title_from_filename))
+        
+        if not results:
+            logger.warning(f"No IMDb results found for '{title_from_filename}'")
+            return None, None
+            
+        # Get the first result and fetch full details
+        movie = results[0]
+        await loop.run_in_executor(None, lambda: ia.update(movie))
+        
+        title = movie.get('title')
+        year = movie.get('year')
+        
+        logger.info(f"IMDb lookup successful for '{title_from_filename}': Found '{title} ({year})'")
+        return title, year
+
     except Exception as e:
-        logger.error(f"Error fetching data from IMDb: {e}")
-    return None, None
+        logger.error(f"Error fetching data from IMDb for '{title_from_filename}': {e}")
+        return None, None
 
 async def clean_and_parse_filename(name: str):
     """
-    The definitive, final, intelligent parsing engine.
-    This version uses a multi-stage regex process and web verification
-    to perfectly differentiate titles, seasons, episodes, and every quality tag.
+    A robust, multi-stage parsing engine for filenames.
+    1. Uses PTN to extract initial info.
+    2. Cleans the extracted title.
+    3. Uses IMDb to get the definitive, official title and year.
+    4. Assembles the final, clean data.
     """
-    original_name = name.replace('.', ' ').replace('_', ' ')
+    # --- Stage 1: Initial Parsing with PTN ---
+    parsed_info = PTN.parse(name)
+    
+    initial_title = parsed_info.get('title')
+    year = parsed_info.get('year')
+    season = parsed_info.get('season')
+    episode = parsed_info.get('episode')
+    
+    is_series = season is not None
 
-    # --- Stage 1: High-Precision Extraction ---
-    
-    # Extract Year first, as it's a clear marker
-    year_match = re.search(r'[\(\[]?(\d{4})[\)\]]?', original_name)
-    year = year_match.group(1) if year_match else None
-    
-    # Extract Season and Episode with advanced logic
-    is_series = False
-    season_str = ""
-    episode_str = ""
-    # This regex is designed to find SXXEXX, SXX EXX, Season XX Episode XX, etc. and capture the full episode range
-    series_match = re.search(r'(?:[Ss]eason|[Ss])\s?(\d+)(?:\s?(?:[Ee]pisode|[Ee][Pp]?\.?)\s?([\d-]+))?', original_name, re.IGNORECASE)
-    if series_match:
-        is_series = True
-        season_num = int(series_match.group(1))
-        season_str = f"S{season_num:02d}"
-        
-        if series_match.group(2):
-            # Handle episode ranges like 01-06
-            episode_part = series_match.group(2)
-            episode_nums = re.findall(r'\d+', episode_part)
-            if len(episode_nums) > 1:
-                episode_str = f"E{episode_nums[0].zfill(2)}-E{episode_nums[-1].zfill(2)}"
-            elif len(episode_nums) == 1:
-                episode_str = f"E{episode_nums[0].zfill(2)}"
-    
-    # Expanded list of all possible quality, source, and audio tags
-    tags_to_find = [
-        '1080p', '720p', '480p', '540p', 'WEB-DL', 'WEBRip', 'BluRay', 'HDTC', 'HDRip',
-        'x264', 'x265', 'AAC', 'Dual Audio', 'Multi Audio', 'Hindi', 'English', 'ESub', 'HEVC', 
-        'DDP5 1', 'DDP2 0', 'AMZN', 'Dua'
-    ]
-    # Unnecessary tags to be filtered out from the final caption
-    unnecessary_tags = ['x264', 'x265', 'AAC', 'HEVC']
+    # --- Stage 2: IMDb Verification for Definitive Title ---
+    definitive_title, definitive_year = await get_definitive_title_from_imdb(initial_title)
 
-    all_tags_regex = r'\b(' + '|'.join(re.escape(tag) for tag in tags_to_find) + r')\b'
-    found_tags = re.findall(all_tags_regex, original_name, re.IGNORECASE)
-    
-    # Standardize tags and handle language logic
-    standardized_tags = {tag.strip().upper().replace("DUA", "DUAL AUDIO") for tag in found_tags}
-    if "DUAL AUDIO" in standardized_tags or "MULTI AUDIO" in standardized_tags:
-        standardized_tags.discard("HINDI")
-        standardized_tags.discard("ENGLISH")
-    
-    # Filter out unnecessary tags
-    final_tags = {tag for tag in standardized_tags if tag.upper() not in [ut.upper() for ut in unnecessary_tags]}
-
-    quality_tags = " | ".join(sorted(list(final_tags), key=lambda x: x.lower()))
-
-
-    # --- Stage 2: Aggressive Title Cleaning ---
-    
-    # Start with the full name and carve away the junk
-    refined_title = original_name
-
-    # Remove all extracted information to isolate the title
-    if year: refined_title = refined_title.replace(year_match.group(0), '')
-    if is_series and series_match:
-        refined_title = re.sub(re.escape(series_match.group(0)), '', refined_title, flags=re.IGNORECASE)
-    
-    # Remove all found tags and promotional junk
-    promo_junk = ['SkymoviesHD', 'PMI', 'part002']
-    full_junk_list = tags_to_find + promo_junk
-    
-    for junk in full_junk_list:
-        refined_title = re.sub(r'\b' + re.escape(junk) + r'\b', '', refined_title, flags=re.IGNORECASE)
-    
-    # Remove remaining junk words and symbols
-    more_junk = ['completed', 'web series', 'mkv', 'esubs', 'du', 'au', 'dual', 'audi', 'audiol']
-    junk_regex = r'\b(' + '|'.join(re.escape(word) for word in more_junk) + r')\b'
-    refined_title = re.sub(junk_regex, '', refined_title, flags=re.I)
-    refined_title = re.sub(r'[\(\)\[\]\{\}\+@]', '', refined_title) # Remove symbols
-    refined_title = re.sub(r'\s\d\s\d\s', '', refined_title) # Remove ' 5 1 '
-    refined_title = ' '.join(refined_title.split()).strip() # Consolidate spaces
-
-    # --- Stage 3: Web Verification for Definitive Title ---
-    
-    definitive_title, definitive_year = await get_definitive_title_from_imdb(refined_title)
-    
-    # --- Stage 4: Assemble Final Data ---
-    
+    # --- Stage 3: Assemble Final Data ---
     if definitive_title:
-        batch_title = f"{definitive_title} {season_str}".strip() if is_series else definitive_title
-        year_to_use = definitive_year
+        final_title = definitive_title
+        final_year = definitive_year
     else:
-        batch_title = f"{refined_title} {season_str}".strip() if is_series else refined_title
-        year_to_use = year
+        # Fallback to the title from PTN if IMDb fails
+        final_title = initial_title
+        final_year = year
+        
+    batch_title = f"{final_title}"
+    if is_series:
+        batch_title += f" S{season:02d}"
+
+    # Re-assemble quality tags from the original filename for the post body
+    quality_tags_parts = []
+    if parsed_info.get('resolution'): quality_tags_parts.append(parsed_info.get('resolution'))
+    if parsed_info.get('quality'): quality_tags_parts.append(parsed_info.get('quality'))
+    if parsed_info.get('codec'): quality_tags_parts.append(parsed_info.get('codec'))
+    if parsed_info.get('audio'): quality_tags_parts.append(parsed_info.get('audio'))
 
     media_info = {
-        "batch_title": batch_title,
-        "year": year_to_use,
+        "batch_title": batch_title.strip(),
+        "year": final_year,
         "is_series": is_series,
-        "season_info": season_str,
-        "episode_info": episode_str,
-        "quality_tags": quality_tags
+        "season_info": f"S{season:02d}" if is_series else "",
+        "episode_info": f"E{episode:02d}" if episode else "",
+        "quality_tags": " | ".join(filter(None, quality_tags_parts))
     }
+    
     return media_info
 
 async def create_post(client, user_id, messages):
