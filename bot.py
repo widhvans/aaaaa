@@ -142,7 +142,7 @@ class Bot(Client):
                         batch_data['messages'].append(copied_message)
                         
                         if batch_data.get('timer'): batch_data['timer'].cancel()
-                        batch_data['timer'] = loop.call_later(45, lambda bk=batch_key: asyncio.create_task(self._finalize_batch(user_id, bk)))
+                        batch_data['timer'] = loop.call_later(5, lambda bk=batch_key: asyncio.create_task(self._finalize_batch(user_id, bk)))
                         found_batch = True
                         break
                 
@@ -150,7 +150,7 @@ class Bot(Client):
                     logger.info(f"No similar batch found. Creating new batch with key: '{title_key}'")
                     self.open_batches[user_id][title_key] = {
                         'messages': [copied_message],
-                        'timer': loop.call_later(45, lambda key=title_key: asyncio.create_task(self._finalize_batch(user_id, key)))
+                        'timer': loop.call_later(5, lambda key=title_key: asyncio.create_task(self._finalize_batch(user_id, key)))
                     }
 
             except Exception as e:
@@ -175,8 +175,6 @@ class Bot(Client):
         await super().start()
         self.me = await self.get_me()
 
-        # --- THIS IS THE FIX ---
-        # Forcefully hydrate the session with all dialogs to cache peer data
         logger.info("Hydrating session with dialogs to prevent Peer ID errors...")
         try:
             async for _ in self.get_dialogs():
@@ -184,7 +182,6 @@ class Bot(Client):
             logger.info("Session hydration complete.")
         except Exception as e:
             logger.error(f"Could not hydrate session: {e}")
-        # --- END OF FIX ---
         
         if self.owner_db_channel:
             try:
