@@ -2,6 +2,7 @@
 
 import logging
 import asyncio
+import time
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait, PeerIdInvalid, MessageNotModified
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -54,6 +55,7 @@ class Bot(Client):
         # For the new time-based collection model
         self.processing_users = set()
         self.waiting_files = {}
+        self.last_dashboard_edit_time = {}
         
         self.vps_ip = Config.VPS_IP
         self.vps_port = Config.VPS_PORT
@@ -84,6 +86,7 @@ class Bot(Client):
             'timer': loop.call_later(50, lambda u=user_id: asyncio.create_task(self._finalize_collection(u))),
             'dashboard_message': dashboard_msg
         }
+        self.last_dashboard_edit_time[user_id] = time.time()
 
     async def _finalize_collection(self, user_id):
         self.processing_users.add(user_id)
@@ -159,6 +162,7 @@ class Bot(Client):
             if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, f"❌ **Error!**\n\nAn unexpected error occurred while processing your files.")
         finally:
             self.processing_users.discard(user_id)
+            self.last_dashboard_edit_time.pop(user_id, None)
             if user_id in self.waiting_files and self.waiting_files[user_id]:
                 logger.info(f"Starting new collection for user {user_id} with {len(self.waiting_files[user_id])} waiting files.")
                 waiting_messages = self.waiting_files.pop(user_id)
@@ -166,6 +170,7 @@ class Bot(Client):
 
     async def file_processor_worker(self):
         logger.info("File Processor Worker started.")
+        DASHBOARD_EDIT_THROTTLE_SECONDS = 5
         while True:
             try:
                 message, user_id = await self.file_queue.get()
@@ -194,15 +199,20 @@ class Bot(Client):
                     collection_data['messages'].append(copied_message)
                     
                     dashboard_msg = collection_data.get('dashboard_message')
-                    if dashboard_msg:
-                        try:
-                           await self.send_with_protection(
-                               dashboard_msg.edit_text,
-                               f"**File Detected**\n\n"
-                               f"📊 **Files Collected:** `{len(collection_data['messages'])}`\n"
-                               f"⏳ **Status:** Resetting 50-second window to collect more files..."
-                           )
-                        except MessageNotModified: pass
+                    
+                    # Throttle dashboard edits to prevent FloodWait
+                    last_edit = self.last_dashboard_edit_time.get(user_id, 0)
+                    if (time.time() - last_edit) > DASHBOARD_EDIT_THROTTLE_SECONDS:
+                        if dashboard_msg:
+                            try:
+                               await self.send_with_protection(
+                                   dashboard_msg.edit_text,
+                                   f"**File Detected**\n\n"
+                                   f"📊 **Files Collected:** `{len(collection_data['messages'])}`\n"
+                                   f"⏳ **Status:** Resetting 50-second window to collect more files..."
+                               )
+                               self.last_dashboard_edit_time[user_id] = time.time()
+                            except MessageNotModified: pass
                     
                     collection_data['timer'] = loop.call_later(50, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
 
