@@ -12,8 +12,7 @@ jinja2
 aiofiles
 python-dotenv
 pymongo
-# New library for advanced filename parsing
-parse-torrent-name
 # For IMDb data
 cinemagoer
+# For advanced filename parsing
 PTN
