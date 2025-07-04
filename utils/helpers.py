@@ -47,7 +47,7 @@ async def get_definitive_title_from_search(refined_title, year):
         loop = asyncio.get_event_loop()
         
         def search_sync():
-            return list(search(query, num=1, stop=1, pause=2))
+            return list(search(query, stop=1, pause=2))
             
         urls = await loop.run_in_executor(None, search_sync)
 
