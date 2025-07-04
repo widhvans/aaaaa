@@ -66,29 +66,31 @@ class Bot(Client):
                 return None
 
     async def find_matching_batch_key(self, user_id, title_key):
-        """Finds the best matching batch key for a given title using aggressive fuzzy matching."""
-        best_match_key = None
-        highest_similarity = 82  # More inclusive threshold
-
+        """
+        Finds the best matching batch key for a given title key.
+        It calculates the similarity with all open batches for the user
+        and returns the key with the highest similarity, if it's above a set threshold.
+        """
         if user_id not in self.open_batches:
             return None
 
-        # First pass: Check for high-quality matches based on word order and similarity
+        best_match_key = None
+        highest_similarity = 0
+        # A threshold to prevent completely unrelated files from batching.
+        MATCH_THRESHOLD = 88 
+
         for existing_key in self.open_batches[user_id]:
-            similarity = fuzz.token_sort_ratio(title_key, existing_key)
+            similarity = fuzz.token_sort_ratio(title_key.lower(), existing_key.lower())
             if similarity > highest_similarity:
                 highest_similarity = similarity
                 best_match_key = existing_key
+
+        if highest_similarity >= MATCH_THRESHOLD:
+            logger.info(f"Found best match for '{title_key}' -> '{best_match_key}' with similarity {highest_similarity}%.")
+            return best_match_key
         
-        # Second pass: If no strong match, try a more lenient check for substrings
-        if not best_match_key:
-            for existing_key in self.open_batches[user_id]:
-                if fuzz.partial_ratio(title_key, existing_key) > 92: # Needs to be a very high partial match
-                    best_match_key = existing_key
-                    logger.info(f"Found a batch match for '{title_key}' with '{existing_key}' using lenient partial ratio.")
-                    return best_match_key
-        
-        return best_match_key
+        logger.info(f"No suitable batch found for '{title_key}'. Highest similarity was {highest_similarity}% with '{best_match_key}', which is below the threshold of {MATCH_THRESHOLD}%.")
+        return None
 
     async def _finalize_batch(self, user_id, batch_key):
         if user_id not in self.open_batches or batch_key not in self.open_batches[user_id]:
@@ -100,10 +102,10 @@ class Bot(Client):
 
         try:
             if not messages:
-                if dashboard_msg: await dashboard_msg.delete()
+                if dashboard_msg: await self.send_with_protection(dashboard_msg.delete)
                 return
 
-            if dashboard_msg: await dashboard_msg.edit_text(f"**Processing Batch**\n\n🎬 **Batch:** `{batch_key}`\n"
+            if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, f"**Processing Batch**\n\n🎬 **Batch:** `{batch_key}`\n"
                                                           f"⏳ **Status:** Processing `{len(messages)}` files...")
 
             user = await get_user(user_id)
@@ -111,16 +113,16 @@ class Bot(Client):
 
             post_channel_id = await get_post_channel(user_id)
             if not post_channel_id:
-                if dashboard_msg: await dashboard_msg.edit_text("❌ **Error!**\n\nNo Post Channel is configured. Cannot create post.")
+                if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, "❌ **Error!**\n\nNo Post Channel is configured. Cannot create post.")
                 return
 
             if not await notify_and_remove_invalid_channel(self, user_id, post_channel_id, "Post"):
-                 if dashboard_msg: await dashboard_msg.edit_text("❌ **Error!**\n\nCould not access the configured Post Channel.")
+                 if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, "❌ **Error!**\n\nCould not access the configured Post Channel.")
                  return
 
             posts_to_send = await create_post(self, user_id, messages)
             
-            if dashboard_msg: await dashboard_msg.edit_text(f"**Posting Batch**\n\n🎬 **Batch:** `{batch_key}`\n"
+            if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, f"**Posting Batch**\n\n🎬 **Batch:** `{batch_key}`\n"
                                                           f"⏳ **Status:** Posting `{len(posts_to_send)}` message(s) to your channel...")
 
             for channel_id in [post_channel_id]:
@@ -132,11 +134,14 @@ class Bot(Client):
                         await self.send_with_protection(self.send_message, channel_id, caption, reply_markup=footer, disable_web_page_preview=True)
                     await asyncio.sleep(2) 
 
-            if dashboard_msg: await dashboard_msg.edit_text(f"✅ **Batch Complete!**\n\n`{batch_key}` with `{len(messages)}` files posted successfully.")
+            if dashboard_msg: 
+                await self.send_with_protection(dashboard_msg.edit_text, f"✅ **Batch Complete!**\n\n`{batch_key}` with `{len(messages)}` files posted successfully.")
+                await asyncio.sleep(10) # Keep the completion message for 10 seconds
+                await self.send_with_protection(dashboard_msg.delete)
 
         except Exception as e:
             logger.exception(f"CRITICAL Error finalizing batch {batch_key} for user {user_id}: {e}")
-            if dashboard_msg: await dashboard_msg.edit_text(f"❌ **Error!**\n\nAn unexpected error occurred while processing batch `{batch_key}`.")
+            if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, f"❌ **Error!**\n\nAn unexpected error occurred while processing batch `{batch_key}`.")
         finally:
             if user_id in self.open_batches and not self.open_batches[user_id]:
                 del self.open_batches[user_id]
@@ -164,32 +169,40 @@ class Bot(Client):
 
                 matched_key = await self.find_matching_batch_key(user_id, title_key)
 
-                if matched_key:
-                    batch_data = self.open_batches[user_id][matched_key]
-                    if batch_data['timer']: batch_data['timer'].cancel()
+                batch_key_to_use = matched_key if matched_key else title_key
+
+                if batch_key_to_use in self.open_batches[user_id]:
+                    batch_data = self.open_batches[user_id][batch_key_to_use]
+                    if batch_data.get('timer'): batch_data['timer'].cancel()
                     
                     batch_data['messages'].append(copied_message)
                     
                     dashboard_msg = batch_data.get('dashboard_message')
                     if dashboard_msg:
                         try:
-                           await dashboard_msg.edit_text(f"**Batch Update**\n\n🎬 **Batch:** `{matched_key}`\n"
-                                                      f"📊 **Files Collected:** `{len(batch_data['messages'])}`\n"
-                                                      f"⏳ **Status:** Added new file. Waiting 5 more seconds...")
+                           await self.send_with_protection(
+                               dashboard_msg.edit_text,
+                               f"**Batch Update**\n\n"
+                               f"🎬 **Batch:** `{batch_key_to_use}`\n"
+                               f"📊 **Files Collected:** `{len(batch_data['messages'])}`\n"
+                               f"⏳ **Status:** Added new file. Waiting 10 more seconds for other files..."
+                           )
                         except MessageNotModified: pass
                     
-                    batch_data['timer'] = loop.call_later(5, lambda u=user_id, k=matched_key: asyncio.create_task(self._finalize_batch(u, k)))
+                    batch_data['timer'] = loop.call_later(10, lambda u=user_id, k=batch_key_to_use: asyncio.create_task(self._finalize_batch(u, k)))
                 else:
-                    dashboard_msg = await self.send_message(
+                    dashboard_msg = await self.send_with_protection(
+                        self.send_message,
                         chat_id=user_id,
-                        text=f"**New Batch Detected**\n\n🎬 **Batch:** `{title_key}`\n"
+                        text=f"**New Batch Detected**\n\n"
+                             f"🎬 **Batch:** `{batch_key_to_use}`\n"
                              f"📊 **Files Collected:** `1`\n"
-                             f"⏳ **Status:** Collecting files. Waiting for 5 seconds..."
+                             f"⏳ **Status:** Collecting more files. Waiting for 10 seconds..."
                     )
                     
-                    self.open_batches[user_id][title_key] = {
+                    self.open_batches[user_id][batch_key_to_use] = {
                         'messages': [copied_message],
-                        'timer': loop.call_later(5, lambda u=user_id, k=title_key: asyncio.create_task(self._finalize_batch(u, k))),
+                        'timer': loop.call_later(10, lambda u=user_id, k=batch_key_to_use: asyncio.create_task(self._finalize_batch(u, k))),
                         'dashboard_message': dashboard_msg
                     }
             except Exception as e:
