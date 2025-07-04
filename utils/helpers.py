@@ -81,15 +81,26 @@ async def clean_and_parse_filename(name: str):
     initial_title = parsed_info.get('title')
     year = parsed_info.get('year')
     season = parsed_info.get('season')
-    episode = parsed_info.get('episode')
     
-    # Handle episode ranges
-    episode_range = None
-    if isinstance(episode, list):
-        episode_range = f"E{min(episode):02d}-E{max(episode):02d}"
-        episode = None # Clear the single episode number
-        
-    is_series = season is not None
+    # Advanced episode parsing to handle single episodes and ranges
+    episode_info_str = ""
+    episode_match = re.search(r'[Ee][Pp]?\s?(\d+)(?:\s?-\s?[Ee][Pp]?\s?(\d+))?', name)
+    if episode_match:
+        start_ep = int(episode_match.group(1))
+        if episode_match.group(2):
+            end_ep = int(episode_match.group(2))
+            episode_info_str = f"E{start_ep:02d}-E{end_ep:02d}"
+        else:
+            episode_info_str = f"E{start_ep:02d}"
+    elif parsed_info.get('episode'):
+        # Fallback to PTN's episode parsing if our regex fails
+        episode = parsed_info.get('episode')
+        if isinstance(episode, list):
+            episode_info_str = f"E{min(episode):02d}-E{max(episode):02d}"
+        else:
+            episode_info_str = f"E{episode:02d}"
+
+    is_series = season is not None or episode_info_str != ""
 
     # --- Stage 2: IMDb Verification for Definitive Title ---
     definitive_title, definitive_year = await get_definitive_title_from_imdb(initial_title)
@@ -103,7 +114,7 @@ async def clean_and_parse_filename(name: str):
         final_year = year
         
     batch_title = f"{final_title}"
-    if is_series:
+    if is_series and season:
         batch_title += f" S{season:02d}"
 
     # Re-assemble quality tags from the original filename for the post body
@@ -112,18 +123,12 @@ async def clean_and_parse_filename(name: str):
     if parsed_info.get('quality'): quality_tags_parts.append(parsed_info.get('quality'))
     if parsed_info.get('codec'): quality_tags_parts.append(parsed_info.get('codec'))
     if parsed_info.get('audio'): quality_tags_parts.append(parsed_info.get('audio'))
-
-    episode_info_str = ""
-    if episode_range:
-        episode_info_str = episode_range
-    elif episode:
-        episode_info_str = f"E{episode:02d}"
         
     media_info = {
         "batch_title": batch_title.strip(),
         "year": final_year,
         "is_series": is_series,
-        "season_info": f"S{season:02d}" if is_series else "",
+        "season_info": f"S{season:02d}" if season else "",
         "episode_info": episode_info_str,
         "quality_tags": " | ".join(filter(None, quality_tags_parts))
     }
@@ -212,6 +217,7 @@ async def create_post(client, user_id, messages):
 
 async def get_title_key(filename: str) -> str:
     media_info = await clean_and_parse_filename(filename)
+    # Return the batch title, which now includes the season for series
     return media_info['batch_title'] if media_info else None
 
 def calculate_title_similarity(title1: str, title2: str) -> float:
