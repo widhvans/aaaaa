@@ -1,6 +1,6 @@
 import logging
 from pyrogram import Client, filters
-from database.db import find_owner_by_db_channel
+from database.db import find_owner_by_index_channel
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +11,7 @@ async def new_file_handler(client, message):
     to the processing queue in bot.py for the Fuzzy Matcher to handle.
     """
     try:
-        user_id = await find_owner_by_db_channel(message.chat.id)
+        user_id = await find_owner_by_index_channel(message.chat.id)
         if not user_id: 
             return
 
