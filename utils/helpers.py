@@ -49,19 +49,20 @@ def clean_and_parse_filename(name: str):
     season_str = ""
     episode_str = ""
     # This regex is designed to find SXXEXX, SXX EXX, Season XX Episode XX, etc. and capture the full episode range
-    series_match = re.search(r'(?:[Ss]eason|[Ss])\s?(\d+)\s?(?:[Ee]pisode|[Ee][Pp]?\.?)\s?([\d-]+)', original_name, re.IGNORECASE)
+    series_match = re.search(r'(?:[Ss]eason|[Ss])\s?(\d+)(?:\s?(?:[Ee]pisode|[Ee][Pp]?\.?)\s?([\d-]+))?', original_name, re.IGNORECASE)
     if series_match:
         is_series = True
         season_num = int(series_match.group(1))
         season_str = f"S{season_num:02d}"
         
-        # Handle episode ranges like 01-06
-        episode_part = series_match.group(2)
-        episode_nums = re.findall(r'\d+', episode_part)
-        if len(episode_nums) > 1:
-            episode_str = f"E{episode_nums[0].zfill(2)}-E{episode_nums[-1].zfill(2)}"
-        elif len(episode_nums) == 1:
-            episode_str = f"E{episode_nums[0].zfill(2)}"
+        if series_match.group(2):
+            # Handle episode ranges like 01-06
+            episode_part = series_match.group(2)
+            episode_nums = re.findall(r'\d+', episode_part)
+            if len(episode_nums) > 1:
+                episode_str = f"E{episode_nums[0].zfill(2)}-E{episode_nums[-1].zfill(2)}"
+            elif len(episode_nums) == 1:
+                episode_str = f"E{episode_nums[0].zfill(2)}"
     
     # Expanded list of all possible quality, source, and audio tags
     tags_to_find = [
@@ -69,6 +70,9 @@ def clean_and_parse_filename(name: str):
         'x264', 'x265', 'AAC', 'Dual Audio', 'Multi Audio', 'Hindi', 'English', 'ESub', 'HEVC', 
         'DDP5 1', 'DDP2 0', 'AMZN', 'Dua'
     ]
+    # Unnecessary tags to be removed from the final caption
+    unnecessary_tags = ['x264', 'x265', 'AAC', 'HEVC']
+
     all_tags_regex = r'\b(' + '|'.join(re.escape(tag) for tag in tags_to_find) + r')\b'
     found_tags = re.findall(all_tags_regex, original_name, re.IGNORECASE)
     
@@ -78,23 +82,24 @@ def clean_and_parse_filename(name: str):
         standardized_tags.discard("HINDI")
         standardized_tags.discard("ENGLISH")
     
-    quality_tags = " | ".join(sorted(list(standardized_tags), key=lambda x: x.lower()))
+    # Filter out unnecessary tags
+    final_tags = {tag for tag in standardized_tags if tag.upper() not in [ut.upper() for ut in unnecessary_tags]}
+
+    quality_tags = " | ".join(sorted(list(final_tags), key=lambda x: x.lower()))
 
 
     # --- Stage 2: Aggressive Title Cleaning ---
     
-    # Start with what PTN thinks is the title
-    ptn_info = PTN.parse(original_name)
-    cleaned_title = ptn_info.get('title', original_name)
+    # Start with the full name and carve away the junk
+    cleaned_title = original_name
 
-    # Be much more aggressive with cleaning
-    # Remove everything that we've already extracted
-    if year: cleaned_title = re.sub(r'(\d{4})', '', cleaned_title)
+    # Remove all extracted information to isolate the title
+    if year: cleaned_title = cleaned_title.replace(year_match.group(0), '')
     if is_series and series_match:
         cleaned_title = re.sub(re.escape(series_match.group(0)), '', cleaned_title, flags=re.IGNORECASE)
     
     # Remove all found tags and promotional junk
-    promo_junk = ['SkymoviesHD', 'PMI']
+    promo_junk = ['SkymoviesHD', 'PMI', 'part002']
     full_junk_list = tags_to_find + promo_junk
     
     for junk in full_junk_list:
