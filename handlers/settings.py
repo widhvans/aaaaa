@@ -257,7 +257,7 @@ async def my_files_handler(client, query):
     except Exception:
         logger.exception("Error in my_files_handler"); await query.answer("Something went wrong.", show_alert=True)
 
-async def _format_and_send_search_results(client, query, user_id, search_query, page):
+async def _format_and_send_search_results(client, source, user_id, search_query, page):
     files_per_page = 5
     files_list, total_files = await search_user_files(user_id, search_query, page, files_per_page)
     text = f"**🔎 Search Results for `{search_query}` ({total_files} Found)**\n\n"
@@ -268,13 +268,15 @@ async def _format_and_send_search_results(client, query, user_id, search_query, 
             deep_link = f"https://t.me/{client.me.username}?start=ownerget_{composite_id}"
             text += f"**File:** `{file['file_name']}`\n**Link:** [Click Here to Get File]({deep_link})\n\n"
     buttons, nav_row = [], []
-    encoded_query = base64.urlsafe_b64encode(search_query.encode()).decode().strip("=")
-    if page > 1: nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"search_results_{page-1}_{encoded_query}"))
-    if total_files > page * files_per_page: nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"search_results_{page+1}_{encoded_query}"))
+
+    # FIX: No more encoding query in callback_data to prevent ButtonDataInvalid error
+    if page > 1: nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"search_results_{page-1}"))
+    if total_files > page * files_per_page: nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"search_results_{page+1}"))
+    
     if nav_row: buttons.append(nav_row)
     buttons.append([InlineKeyboardButton("📚 Back to Full List", callback_data="my_files_1")])
     buttons.append([InlineKeyboardButton("« Go Back to Settings", callback_data=f"go_back_{user_id}")])
-    await safe_edit_message(query, text=text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+    await safe_edit_message(source, text=text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
 
 @Client.on_callback_query(filters.regex("search_my_files"))
 async def search_my_files_prompt(client, query):
@@ -282,20 +284,30 @@ async def search_my_files_prompt(client, query):
     try:
         prompt = await query.message.edit_text("**🔍 Search Your Files**\n\nPlease send the name of the file you want to find.", reply_markup=go_back_button(user_id))
         response = await client.listen(chat_id=user_id, timeout=300, filters=filters.text)
+        
+        # FIX: Store search query in the bot's cache instead of callback_data
+        if not hasattr(client, 'search_cache'):
+            client.search_cache = {}
+        client.search_cache[user_id] = response.text
+        
         await response.delete()
         await _format_and_send_search_results(client, query, user_id, response.text, 1)
     except asyncio.TimeoutError: await safe_edit_message(query, text="❗️ **Timeout:** Search cancelled.", reply_markup=go_back_button(user_id))
     except Exception as e:
         logger.exception("Error in search_my_files_prompt"); await safe_edit_message(query, text=f"An error occurred: {e}", reply_markup=go_back_button(user_id))
 
-@Client.on_callback_query(filters.regex(r"search_results_(\d+)_(.+)"))
+@Client.on_callback_query(filters.regex(r"search_results_(\d+)"))
 async def search_results_paginator(client, query):
     try:
         page = int(query.matches[0].group(1))
-        encoded_query = query.matches[0].group(2)
-        padding = 4 - (len(encoded_query) % 4)
-        search_query = base64.urlsafe_b64decode(encoded_query + "=" * padding).decode()
-        await _format_and_send_search_results(client, query, query.from_user.id, search_query, page)
+        user_id = query.from_user.id
+        
+        # FIX: Retrieve search query from cache
+        if not hasattr(client, 'search_cache') or user_id not in client.search_cache:
+            return await query.answer("Your search session has expired. Please start a new search.", show_alert=True)
+        search_query = client.search_cache[user_id]
+        
+        await _format_and_send_search_results(client, query, user_id, search_query, page)
     except Exception:
         logger.exception("Error during search pagination"); await safe_edit_message(query, text="An error occurred during pagination.")
 
