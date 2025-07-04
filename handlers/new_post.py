@@ -19,7 +19,7 @@ async def new_file_handler(client, message):
         if not media or not getattr(media, 'file_name', None):
             return
         
-        if not client.owner_db_channel_id:
+        if not client.owner_db_channel:
             logger.warning("Owner Database Channel not set by admin. Ignoring file.")
             return
         
