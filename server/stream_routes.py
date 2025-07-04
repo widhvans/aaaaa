@@ -1,4 +1,4 @@
-# server/stream_routes.py (FULL REPLACEMENT - Final Stable Version)
+# server/stream_routes.py
 
 import logging
 import asyncio
@@ -41,18 +41,17 @@ async def watch_handler(request: web.Request):
 async def stream_or_download(request: web.Request, disposition: str):
     """
     Handles streaming by piping data directly from Telegram to the client.
-    This method is optimized for stability and speed, avoiding disk I/O and complex session handling.
+    This method is optimized for stability and speed, avoiding disk I/O.
     """
     try:
         message_id = int(request.match_info.get("message_id"))
         bot = request.app['bot']
 
-        # Stream channel ya owner DB channel se chat_id lein
-        chat_id = bot.stream_channel_id or bot.owner_db_channel_id
+        # All streams will now come from the single, reliable owner log channel
+        chat_id = bot.owner_db_channel
         if not chat_id:
-            raise ValueError("Streaming channels not configured on the bot.")
+            raise ValueError("Owner DB Channel is not configured on the bot.")
 
-        # Telegram se message object prapt karein
         message = await bot.get_messages(chat_id=chat_id, message_ids=message_id)
 
         if not message or not message.media:
@@ -71,13 +70,11 @@ async def stream_or_download(request: web.Request, disposition: str):
         response = web.StreamResponse(status=200, headers=headers)
         await response.prepare(request)
         
-        # Seedhe Telegram se user tak stream karein, bina disk aur manual sessions ke
         async for chunk in bot.stream_media(message):
             try:
                 await response.write(chunk)
             except (ConnectionError, asyncio.CancelledError):
                 logger.warning(f"Client disconnected for message {message_id}. Stopping stream.")
-                # Client chala gaya, isliye stream band kar dein
                 break
         
         return response
