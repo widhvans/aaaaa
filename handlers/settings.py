@@ -1,9 +1,7 @@
-# settings.py (FIXED & ENHANCED VERSION)
-
 import asyncio
 import base64
 import logging
-import aiohttp  # --- NEW: Import for URL validation ---
+import aiohttp
 from pyrogram import Client, filters, enums
 from pyrogram.enums import ParseMode
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
@@ -12,10 +10,9 @@ from database.db import (
     get_user, update_user, add_to_list, remove_from_list,
     get_user_file_count, add_footer_button, remove_footer_button,
     get_all_user_files, get_paginated_files, search_user_files,
-    add_user
+    add_user, set_post_channel, set_index_db_channel
 )
 from utils.helpers import go_back_button, get_main_menu, create_post, clean_and_parse_filename, calculate_title_similarity, notify_and_remove_invalid_channel
-# --- NEW: Import the validator function ---
 from features.shortener import validate_shortener
 
 logger = logging.getLogger(__name__)
@@ -47,9 +44,6 @@ async def safe_edit_message(source, *args, **kwargs):
                 await source.answer("An error occurred. Please try again.", show_alert=True)
         except Exception:
             pass
-
-
-# --- Helper functions to build dynamic menus ---
 
 async def get_shortener_menu_parts(user_id):
     user = await get_user(user_id)
@@ -505,6 +499,11 @@ async def add_channel_prompt(client, query):
         response = await client.listen(chat_id=user_id, filters=filters.forwarded, timeout=300)
         
         if response.forward_from_chat:
+            if ch_type_short == 'post':
+                await set_post_channel(user_id, response.forward_from_chat.id)
+            else:
+                await set_index_db_channel(user_id, response.forward_from_chat.id)
+
             await add_to_list(user_id, ch_type_key, response.forward_from_chat.id)
             await response.reply_text(f"✅ Connected to **{response.forward_from_chat.title}**.", reply_markup=go_back_button(user_id))
         else: 
@@ -537,7 +536,6 @@ async def set_filename_link_handler(client, query):
     except:
         logger.exception("Error in set_filename_link_handler"); await safe_edit_message(query, text="An error occurred.", reply_markup=go_back_button(user_id))
 
-# --- MODIFIED: This function now handles URL validation for the 'download' link ---
 @Client.on_callback_query(filters.regex("^(set_fsub|set_download)$"))
 async def set_other_links_handler(client, query):
     user_id, action = query.from_user.id, query.data.split("_")[1]
