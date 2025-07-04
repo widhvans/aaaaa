@@ -15,4 +15,4 @@ pymongo
 # For IMDb data
 cinemagoer
 # For advanced filename parsing
-PTN
+parse-torrent-name
