@@ -66,14 +66,14 @@ def clean_and_parse_filename(name: str):
     # Extract ALL possible quality tags and languages
     tags_to_find = [
         '1080p', '720p', '480p', '540p', 'WEB-DL', 'WEBRip', 'BluRay', 'HDTC', 'HDRip',
-        'x264', 'x265', 'AAC', 'Dual Audio', 'Hindi', 'English', 'ESub', 'HEVC', 'Dua'
+        'x264', 'x265', 'AAC', 'Dual Audio', 'Multi Audio', 'Hindi', 'English', 'ESub', 'HEVC', 'Dua'
     ]
     all_tags_regex = r'\b(' + '|'.join(re.escape(tag) for tag in tags_to_find) + r')\b'
     found_tags = re.findall(all_tags_regex, original_name, re.IGNORECASE)
     
-    # Standardize "Dua" to "Dual Audio" and handle language logic
+    # Standardize tags and handle language logic
     standardized_tags = {tag.strip().replace("Dua", "Dual Audio") for tag in found_tags}
-    if "Dual Audio" in standardized_tags:
+    if "Dual Audio" in standardized_tags or "Multi Audio" in standardized_tags:
         standardized_tags.discard("Hindi")
         standardized_tags.discard("English")
     
@@ -82,13 +82,11 @@ def clean_and_parse_filename(name: str):
 
     # --- Stage 2: Aggressive Title Cleaning ---
     
-    # Start with what PTN thinks is the title
-    ptn_info = PTN.parse(original_name)
-    cleaned_title = ptn_info.get('title', original_name)
+    # Start with the full name and carve away the junk
+    cleaned_title = original_name
 
-    # Be much more aggressive with cleaning
-    # Remove everything that we've already extracted
-    if year: cleaned_title = re.sub(r'(\d{4})', '', cleaned_title)
+    # Remove all extracted information to isolate the title
+    if year: cleaned_title = cleaned_title.replace(year_match.group(0), '')
     if is_series and series_match:
         cleaned_title = re.sub(re.escape(series_match.group(0)), '', cleaned_title, flags=re.IGNORECASE)
     
