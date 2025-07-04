@@ -1,4 +1,4 @@
-# helpers.py (FIXED VERSION)
+# helpers.py
 
 import re
 import base64
@@ -45,7 +45,6 @@ def clean_and_parse_filename(name: str):
         base_title = parsed_info.get('title', '')
         year = str(parsed_info.get('year')) if 'year' in parsed_info else None
         is_series = 'season' in parsed_info and 'episode' in parsed_info
-        # FIX: Return an empty string instead of None for non-series
         episode_info = f"S{str(parsed_info.get('season')).zfill(2)}E{str(parsed_info.get('episode')).zfill(2)}" if is_series else ''
     except Exception:
         parsed_info = {}
@@ -106,7 +105,6 @@ async def create_post(client, user_id, messages):
 
     if not media_info_list: return []
 
-    # This line will now be safe because natural_sort_key can handle empty strings
     media_info_list.sort(key=lambda x: natural_sort_key(x.get('episode_info', '')))
 
     first_info = media_info_list[0]
@@ -130,7 +128,6 @@ async def create_post(client, user_id, messages):
             display_tags = info['quality_tags']
 
         composite_id = f"{user_id}_{info['file_unique_id']}"
-        # --- FIX: Ensure the generated link is always valid ---
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{composite_id}"
         file_size_str = format_bytes(info['file_size'])
 
@@ -182,17 +179,19 @@ async def get_file_raw_link(message):
     return f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.id}"
 
 def natural_sort_key(s):
-    # --- FIX: This function is now safe from TypeError ---
     if not isinstance(s, str):
-        return [s] # Return a list to maintain sort behavior without crashing
+        return [s]
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'([0-9]+)', s)]
 
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id) or {}
-    db_channels, post_channels = user_settings.get('db_channels', []), user_settings.get('post_channels', [])
-    menu_text = "✅ **Setup Complete!**\n\nYou can now forward files to your Database Channel." if db_channels and post_channels else "⚙️ **Bot Settings**\n\nChoose an option below to configure the bot."
+    post_channels = user_settings.get('post_channels', [])
+    index_channel = user_settings.get('index_db_channel')
+    
+    menu_text = "✅ **Setup Complete!**\n\nYou can now forward files to your Index Channel." if index_channel and post_channels else "⚙️ **Bot Settings**\n\nChoose an option below to configure the bot."
     shortener_text = "⚙️ Shortener Settings" if user_settings.get('shortener_url') else "🔗 Set Shortener"
     fsub_text = "⚙️ Manage FSub" if user_settings.get('fsub_channel') else "📢 Set FSub"
+    
     buttons = [
         [InlineKeyboardButton("🗂️ Manage Channels", callback_data="manage_channels_menu")],
         [InlineKeyboardButton(shortener_text, callback_data="shortener_menu"), InlineKeyboardButton("🔄 Backup Links", callback_data="backup_links")],
@@ -200,15 +199,18 @@ async def get_main_menu(user_id):
         [InlineKeyboardButton("🖼️ IMDb Poster", callback_data="poster_menu"), InlineKeyboardButton("📂 My Files", callback_data="my_files_1")],
         [InlineKeyboardButton(fsub_text, callback_data="fsub_menu"), InlineKeyboardButton("❓ How to Download", callback_data="how_to_download_menu")]
     ]
+    
     if user_id == Config.ADMIN_ID:
-        buttons.extend([
-            [InlineKeyboardButton("🔑 Set Owner DB", callback_data="set_owner_db"), InlineKeyboardButton("🌊 Set Stream Channel", callback_data="set_stream_ch")],
-            [InlineKeyboardButton("⚠️ Reset Files DB", callback_data="reset_db_prompt")]
-        ])
+        # Admin-specific buttons are now removed from here
+        pass
+        
     return menu_text, InlineKeyboardMarkup(buttons)
 
 async def notify_and_remove_invalid_channel(client, user_id, channel_id, channel_type):
     db_key = f"{channel_type.lower()}_channels"
+    if channel_type.lower() == 'index db':
+        db_key = 'index_db_channel'
+        
     try:
         await client.get_chat_member(channel_id, "me")
         return True
@@ -216,7 +218,10 @@ async def notify_and_remove_invalid_channel(client, user_id, channel_id, channel
         error_text = f"⚠️ **Channel Inaccessible**\n\nYour {channel_type.title()} Channel (ID: `{channel_id}`) has been automatically removed."
         try:
             await client.send_message(user_id, error_text)
-            await remove_from_list(user_id, db_key, channel_id)
+            if isinstance(user_settings.get(db_key), list):
+                 await remove_from_list(user_id, db_key, channel_id)
+            else:
+                 await update_user(user_id, db_key, None)
         except Exception as e:
             logger.error(f"Failed to notify/remove channel for user {user_id}. Error: {e}")
         return False
