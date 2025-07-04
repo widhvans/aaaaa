@@ -20,6 +20,10 @@ TEXT_MESSAGE_LIMIT = 4096
 
 ia = Cinemagoer()
 
+def go_back_button(user_id):
+    """Creates a standard 'Go Back' button to return to the main menu."""
+    return InlineKeyboardMarkup([[InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")]])
+
 def get_batch_key_from_filename(filename: str) -> str:
     """
     Generates a batch key based on significant words (5+ letters) in the filename.
@@ -238,7 +242,8 @@ async def notify_and_remove_invalid_channel(client, user_id, channel_id, channel
         return True
     except Exception:
         db_key = 'index_db_channel' if channel_type == 'Index DB' else 'post_channels'
-        if isinstance(await get_user(user_id).get(db_key), list):
+        user_settings = await get_user(user_id)
+        if isinstance(user_settings.get(db_key), list):
              await remove_from_list(user_id, db_key, channel_id)
         else:
              await update_user(user_id, db_key, None)
