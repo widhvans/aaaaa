@@ -37,12 +37,12 @@ def format_bytes(size):
 
 async def get_definitive_title_from_imdb(title_from_filename):
     """
-    Uses the cinemagoer library to find the official title and year from IMDb.
+    Uses the cinemagoer library to find the official title and year from IMDb,
+    with added checks to prevent incorrect matches.
     """
     if not title_from_filename:
         return None, None
     try:
-        # Search for the movie/series
         loop = asyncio.get_event_loop()
         results = await loop.run_in_executor(None, lambda: ia.search_movie(title_from_filename))
         
@@ -50,15 +50,22 @@ async def get_definitive_title_from_imdb(title_from_filename):
             logger.warning(f"No IMDb results found for '{title_from_filename}'")
             return None, None
             
-        # Get the first result and fetch full details
         movie = results[0]
         await loop.run_in_executor(None, lambda: ia.update(movie))
         
-        title = movie.get('title')
-        year = movie.get('year')
+        imdb_title = movie.get('title')
+        imdb_year = movie.get('year')
         
-        logger.info(f"IMDb lookup successful for '{title_from_filename}': Found '{title} ({year})'")
-        return title, year
+        # To prevent wildly inaccurate matches, we'll check the similarity
+        # between the filename title and the IMDb title.
+        similarity = fuzz.token_sort_ratio(title_from_filename.lower(), imdb_title.lower())
+        
+        if similarity < 50: # Adjust this threshold as needed
+            logger.warning(f"IMDb result '{imdb_title}' has low similarity ({similarity}%) to '{title_from_filename}'. Ignoring.")
+            return None, None
+            
+        logger.info(f"IMDb lookup successful for '{title_from_filename}': Found '{imdb_title} ({imdb_year})'")
+        return imdb_title, imdb_year
 
     except Exception as e:
         logger.error(f"Error fetching data from IMDb for '{title_from_filename}': {e}")
@@ -66,11 +73,7 @@ async def get_definitive_title_from_imdb(title_from_filename):
 
 async def clean_and_parse_filename(name: str):
     """
-    A robust, multi-stage parsing engine for filenames.
-    1. Uses PTN to extract initial info.
-    2. Cleans the extracted title.
-    3. Uses IMDb to get the definitive, official title and year.
-    4. Assembles the final, clean data.
+    A highly robust, multi-stage parsing engine for filenames.
     """
     # --- Stage 1: Initial Parsing with PTN ---
     parsed_info = PTN.parse(name)
@@ -80,17 +83,22 @@ async def clean_and_parse_filename(name: str):
     season = parsed_info.get('season')
     episode = parsed_info.get('episode')
     
+    # Handle episode ranges
+    episode_range = None
+    if isinstance(episode, list):
+        episode_range = f"E{min(episode):02d}-E{max(episode):02d}"
+        episode = None # Clear the single episode number
+        
     is_series = season is not None
 
     # --- Stage 2: IMDb Verification for Definitive Title ---
     definitive_title, definitive_year = await get_definitive_title_from_imdb(initial_title)
 
-    # --- Stage 3: Assemble Final Data ---
+    # --- Stage 3: Assemble Final, Clean Data ---
     if definitive_title:
         final_title = definitive_title
         final_year = definitive_year
     else:
-        # Fallback to the title from PTN if IMDb fails
         final_title = initial_title
         final_year = year
         
@@ -105,12 +113,18 @@ async def clean_and_parse_filename(name: str):
     if parsed_info.get('codec'): quality_tags_parts.append(parsed_info.get('codec'))
     if parsed_info.get('audio'): quality_tags_parts.append(parsed_info.get('audio'))
 
+    episode_info_str = ""
+    if episode_range:
+        episode_info_str = episode_range
+    elif episode:
+        episode_info_str = f"E{episode:02d}"
+        
     media_info = {
         "batch_title": batch_title.strip(),
         "year": final_year,
         "is_series": is_series,
         "season_info": f"S{season:02d}" if is_series else "",
-        "episode_info": f"E{episode:02d}" if episode else "",
+        "episode_info": episode_info_str,
         "quality_tags": " | ".join(filter(None, quality_tags_parts))
     }
     
