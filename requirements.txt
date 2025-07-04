@@ -16,3 +16,4 @@ pymongo
 parse-torrent-name
 # For IMDb data
 cinemagoer
+PTN
