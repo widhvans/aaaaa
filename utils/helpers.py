@@ -35,13 +35,18 @@ def format_bytes(size):
     elif n == 2: return f"{round(size)} {power_labels[n]}"
     else: return f"{int(size)} {power_labels[n]}"
 
-async def get_definitive_title_from_imdb(title_from_filename):
+async def get_definitive_title_from_imdb(title_from_filename, imdb_cache):
     """
     Uses the cinemagoer library to find the official title and year from IMDb,
-    with added checks to prevent incorrect matches.
+    with added checks and performance caching.
     """
     if not title_from_filename:
         return None, None
+    
+    # Check cache first
+    if title_from_filename in imdb_cache:
+        return imdb_cache[title_from_filename]
+        
     try:
         loop = asyncio.get_event_loop()
         results = await loop.run_in_executor(None, lambda: ia.search_movie(title_from_filename))
@@ -56,29 +61,27 @@ async def get_definitive_title_from_imdb(title_from_filename):
         imdb_title = movie.get('title')
         imdb_year = movie.get('year')
         
-        # To prevent wildly inaccurate matches, we'll check the similarity
-        # between the filename title and the IMDb title.
         similarity = fuzz.token_sort_ratio(title_from_filename.lower(), imdb_title.lower())
         
-        if similarity < 50: # Adjust this threshold as needed
+        if similarity < 50:
             logger.warning(f"IMDb result '{imdb_title}' has low similarity ({similarity}%) to '{title_from_filename}'. Ignoring.")
             return None, None
-            
+        
+        # Store result in cache before returning
+        result = (imdb_title, imdb_year)
+        imdb_cache[title_from_filename] = result
         logger.info(f"IMDb lookup successful for '{title_from_filename}': Found '{imdb_title} ({imdb_year})'")
-        return imdb_title, imdb_year
+        return result
 
     except Exception as e:
         logger.error(f"Error fetching data from IMDb for '{title_from_filename}': {e}")
         return None, None
 
-async def clean_and_parse_filename(name: str):
+async def clean_and_parse_filename(name: str, imdb_cache):
     """
-    A highly robust, multi-stage parsing engine for filenames.
+    A highly robust, multi-stage parsing engine for filenames, now with caching.
     """
-    # --- Stage 1: Pre-cleaning ---
-    # Aggressively remove usernames, channel names, and other junk before parsing
-    cleaned_name = re.sub(r'(@|\[@)\S+', '', name) # Remove @username or [@username]
-    # Remove bracketed content that is often a channel/user tag
+    cleaned_name = re.sub(r'(@|\[@)\S+', '', name)
     cleaned_name = re.sub(r'\[\s*\w+\s*\]', '', cleaned_name) 
     
     parsed_info = PTN.parse(cleaned_name.replace('.', ' ').replace('_', ' '))
@@ -87,19 +90,15 @@ async def clean_and_parse_filename(name: str):
     year = parsed_info.get('year')
     season = parsed_info.get('season')
     
-    # --- Stage 2: Advanced Episode & Year Parsing ---
     episode_info_str = ""
-    # Use a cleaned version of the name for robust episode detection
     search_name = name.replace('.', ' ').replace('_', ' ')
     episode_match = re.search(
         r'[Ee](?:p(?:isode)?)?\.?\s*(\d+)(?:\s*(?:-|to)\s*[Ee]?(?:p(?:isode)?)?\.?\s*(\d+))?',
-        search_name,
-        re.IGNORECASE
+        search_name, re.IGNORECASE
     )
 
     if episode_match:
         start_ep = int(episode_match.group(1))
-        # Prevent misinterpreting a year (like 2025) as an episode number
         if 1900 < start_ep < 2100 and not season:
              if not year: year = start_ep
         else:
@@ -108,35 +107,28 @@ async def clean_and_parse_filename(name: str):
                 episode_info_str = f"E{start_ep:02d}-E{end_ep:02d}"
             else:
                 episode_info_str = f"E{start_ep:02d}"
-    # Fallback to PTN's episode parsing if our custom regex fails
     elif parsed_info.get('episode'):
         episode = parsed_info.get('episode')
         if isinstance(episode, list):
             episode_info_str = f"E{min(episode):02d}-E{max(episode):02d}"
-        # Again, check if it's a year and not a real episode number
         elif not (1900 < episode < 2100 and not season):
             episode_info_str = f"E{episode:02d}"
 
     is_series = season is not None or episode_info_str != ""
 
-    # --- Stage 3: IMDb Verification for Definitive Title ---
-    definitive_title, definitive_year = await get_definitive_title_from_imdb(initial_title)
+    definitive_title, definitive_year = await get_definitive_title_from_imdb(initial_title, imdb_cache)
 
-    # --- Stage 4: Assemble Final, Clean Data ---
     final_title = definitive_title if definitive_title else initial_title
     final_year = definitive_year if definitive_year else year
     
-    # This is the key for batching. It's clean and consistent.
     batch_title = f"{final_title}"
     if is_series and season:
         batch_title += f" S{season:02d}"
 
-    # This is the title for display in the post header.
     display_title = f"{final_title}"
     if final_year:
         display_title += f" ({final_year})"
         
-    # Re-assemble quality tags from the original filename for the post body
     quality_tags_parts = []
     if parsed_info.get('resolution'): quality_tags_parts.append(parsed_info.get('resolution'))
     if parsed_info.get('quality'): quality_tags_parts.append(parsed_info.get('quality'))
@@ -145,7 +137,7 @@ async def clean_and_parse_filename(name: str):
         
     media_info = {
         "batch_title": batch_title.strip(),
-        "display_title": display_title.strip(), # This will be used for the post header
+        "display_title": display_title.strip(),
         "year": final_year,
         "is_series": is_series,
         "season_info": f"S{season:02d}" if season else "",
@@ -155,7 +147,7 @@ async def clean_and_parse_filename(name: str):
     
     return media_info
 
-async def create_post(client, user_id, messages):
+async def create_post(client, user_id, messages, imdb_cache, poster_cache, processed_files_counter):
     user = await get_user(user_id)
     if not user: return []
 
@@ -164,25 +156,29 @@ async def create_post(client, user_id, messages):
         media = getattr(m, m.media.value, None)
         if not media: continue
         
-        info = await clean_and_parse_filename(media.file_name)
+        info = await clean_and_parse_filename(media.file_name, imdb_cache)
         if info:
             info['file_size'] = media.file_size
             info['file_unique_id'] = media.file_unique_id
             media_info_list.append(info)
+        processed_files_counter.set_value(processed_files_counter.get_value() + 1)
+
 
     if not media_info_list: return []
 
     media_info_list.sort(key=lambda x: natural_sort_key(x.get('episode_info', '')))
 
     first_info = media_info_list[0]
-    # Use the new 'display_title' for a clean header
     primary_display_title = first_info['display_title']
     year = first_info['year']
     
-    # The header will now use the clean display title from clean_and_parse_filename
-    base_caption_header = f"🎬 **{primary_display_title}**"
-    post_poster = await get_poster(first_info['batch_title'], year) if user.get('show_poster', True) else None
-    
+    post_poster_key = f"{first_info['batch_title']}_{year}"
+    if post_poster_key in poster_cache:
+        post_poster = poster_cache[post_poster_key]
+    else:
+        post_poster = await get_poster(first_info['batch_title'], year) if user.get('show_poster', True) else None
+        poster_cache[post_poster_key] = post_poster
+
     footer_buttons = user.get('footer_buttons', [])
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], btn['url'])] for btn in footer_buttons]) if footer_buttons else None
     
@@ -209,7 +205,7 @@ async def create_post(client, user_id, messages):
         all_link_entries.append(file_entry)
 
     final_posts, current_links_part = [], []
-    base_caption = f"{header_line}\n{base_caption_header}\n{header_line}"
+    base_caption = f"{header_line}\n🎬 **{primary_display_title}**\n{header_line}"
     current_length = len(base_caption) + len(footer_line)
 
     for entry in all_link_entries:
@@ -230,17 +226,16 @@ async def create_post(client, user_id, messages):
     total_posts = len(final_posts)
     if total_posts > 1:
         for i, (poster, cap, foot) in enumerate(final_posts):
-            new_header = f"{primary_display_title} (Part {i+1}/{total_posts})"
-            final_posts[i] = (poster, cap.replace(primary_display_title, new_header), foot)
+            new_header = f"🎬 **{primary_display_title} (Part {i+1}/{total_posts})**"
+            final_posts[i] = (poster, cap.replace(f"🎬 **{primary_display_title}**", new_header), foot)
     elif total_posts == 1 and final_posts:
         _, cap, foot = final_posts[0]
         final_posts[0] = (post_poster, cap, foot)
         
     return final_posts
 
-async def get_title_key(filename: str) -> str:
-    media_info = await clean_and_parse_filename(filename)
-    # Return the batch title, which now includes the season for series
+async def get_title_key(filename: str, imdb_cache) -> str:
+    media_info = await clean_and_parse_filename(filename, imdb_cache)
     return media_info['batch_title'] if media_info else None
 
 def calculate_title_similarity(title1: str, title2: str) -> float:
