@@ -85,7 +85,13 @@ async def clean_and_parse_filename(name: str):
     
     # Advanced episode parsing to handle single episodes and ranges
     episode_info_str = ""
-    episode_match = re.search(r'[Ee][Pp]?\s?(\d+)(?:\s?(?:To|-)\s?[Ee][Pp]?\s?(\d+))?', name)
+    # Regex to capture various episode range formats (e.g., E01-E05, E01 To 05, Ep 01-05)
+    episode_match = re.search(
+        r'[Ee](?:p(?:isode)?)?\.?\s*(\d+)(?:\s*(?:-|to)\s*[Ee]?(?:p(?:isode)?)?\.?\s*(\d+))?',
+        cleaned_name,
+        re.IGNORECASE
+    )
+
     if episode_match:
         start_ep = int(episode_match.group(1))
         if episode_match.group(2):
