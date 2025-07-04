@@ -37,7 +37,7 @@ def clean_and_parse_filename(name: str):
     titles, seasons, episodes, and every quality tag.
     """
     original_name = name.replace('.', ' ').replace('_', ' ')
-
+    
     # --- Stage 1: High-Precision Extraction ---
     
     # Extract Year first, as it's a clear marker
@@ -62,43 +62,44 @@ def clean_and_parse_filename(name: str):
             episode_str = f"E{episode_nums[0].zfill(2)}-E{episode_nums[-1].zfill(2)}"
         elif len(episode_nums) == 1:
             episode_str = f"E{episode_nums[0].zfill(2)}"
-    
-    # Extract ALL possible quality tags and languages
+
+    # Expanded list of all possible quality, source, and audio tags
     tags_to_find = [
         '1080p', '720p', '480p', '540p', 'WEB-DL', 'WEBRip', 'BluRay', 'HDTC', 'HDRip',
-        'x264', 'x265', 'AAC', 'Dual Audio', 'Multi Audio', 'Hindi', 'English', 'ESub', 'HEVC', 'Dua'
+        'x264', 'x265', 'AAC', 'Dual Audio', 'Multi Audio', 'Hindi', 'English', 'ESub', 'HEVC', 
+        'DDP5 1', 'DDP2 0', 'AMZN', 'Dua'
     ]
     all_tags_regex = r'\b(' + '|'.join(re.escape(tag) for tag in tags_to_find) + r')\b'
     found_tags = re.findall(all_tags_regex, original_name, re.IGNORECASE)
     
     # Standardize tags and handle language logic
-    standardized_tags = {tag.strip().replace("Dua", "Dual Audio") for tag in found_tags}
-    if "Dual Audio" in standardized_tags or "Multi Audio" in standardized_tags:
-        standardized_tags.discard("Hindi")
-        standardized_tags.discard("English")
+    standardized_tags = {tag.strip().upper().replace("DUA", "DUAL AUDIO") for tag in found_tags}
+    if "DUAL AUDIO" in standardized_tags or "MULTI AUDIO" in standardized_tags:
+        standardized_tags.discard("HINDI")
+        standardized_tags.discard("ENGLISH")
     
     quality_tags = " | ".join(sorted(list(standardized_tags), key=lambda x: x.lower()))
 
-
     # --- Stage 2: Aggressive Title Cleaning ---
     
-    # Start with the full name and carve away the junk
+    # Start with the full name and carve away all extracted data
     cleaned_title = original_name
 
-    # Remove all extracted information to isolate the title
     if year: cleaned_title = cleaned_title.replace(year_match.group(0), '')
     if is_series and series_match:
         cleaned_title = re.sub(re.escape(series_match.group(0)), '', cleaned_title, flags=re.IGNORECASE)
     
-    # Remove all extracted tags from the title string
-    for tag in found_tags:
-        cleaned_title = re.sub(r'\b' + re.escape(tag) + r'\b', '', cleaned_title, flags=re.IGNORECASE)
+    # Remove all found tags and promotional junk
+    promo_junk = ['SkymoviesHD', 'PMI']
+    full_junk_list = tags_to_find + promo_junk
     
-    # Remove remaining junk words and symbols
-    JUNK_WORDS = ['completed', 'web series', 'mkv', 'esub', 'tamil', 'mini', 'baby']
-    junk_regex = r'\b(' + '|'.join(re.escape(word) for word in JUNK_WORDS) + r')\b'
-    cleaned_title = re.sub(junk_regex, '', cleaned_title, flags=re.I)
-    cleaned_title = re.sub(r'[\(\)\[\]\{\}\+@]', '', cleaned_title) # Remove brackets and symbols
+    for junk in full_junk_list:
+        cleaned_title = re.sub(r'\b' + re.escape(junk) + r'\b', '', cleaned_title, flags=re.IGNORECASE)
+    
+    # Remove any remaining junk patterns (like standalone numbers/letters)
+    cleaned_title = re.sub(r'\b[Ee]\b', '', cleaned_title) # Remove standalone 'E'
+    cleaned_title = re.sub(r'\s\d\s\d\s', '', cleaned_title) # Remove ' 5 1 '
+    cleaned_title = re.sub(r'[\(\)\[\]\{\}\+@]', '', cleaned_title) # Remove symbols
     cleaned_title = ' '.join(cleaned_title.split()).strip() # Consolidate spaces
 
     # --- Stage 3: Assemble Final Data ---
