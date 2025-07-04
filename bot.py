@@ -50,6 +50,10 @@ class Bot(Client):
         self.file_queue = asyncio.Queue()
         self.open_batches = {}
         self.search_cache = {}
+
+        # New state management for smarter batching
+        self.processing_users = set()
+        self.waiting_files = {}
         
         self.vps_ip = Config.VPS_IP
         self.vps_port = Config.VPS_PORT
@@ -65,15 +69,32 @@ class Bot(Client):
                 logger.error(f"An error occurred in send_with_protection: {e}", exc_info=True)
                 return None
 
+    async def _start_new_collection(self, user_id, initial_messages):
+        """Helper function to create a new collection window and dashboard."""
+        loop = asyncio.get_event_loop()
+        dashboard_msg = await self.send_with_protection(
+            self.send_message,
+            chat_id=user_id,
+            text=f"**File(s) Detected**\n\n"
+                 f"📊 **Files Collected:** `{len(initial_messages)}`\n"
+                 f"⏳ **Status:** Started a 5-second window to collect more files..."
+        )
+        self.open_batches[user_id] = {
+            'messages': initial_messages,
+            'timer': loop.call_later(5, lambda u=user_id: asyncio.create_task(self._finalize_collection(u))),
+            'dashboard_message': dashboard_msg
+        }
+
     async def _finalize_collection(self, user_id):
-        if user_id not in self.open_batches or not self.open_batches[user_id]:
-            return
-
-        collection_data = self.open_batches.pop(user_id)
-        messages = collection_data.get('messages', [])
-        dashboard_msg = collection_data.get('dashboard_message')
-
+        self.processing_users.add(user_id)
         try:
+            if user_id not in self.open_batches or not self.open_batches[user_id]:
+                return
+
+            collection_data = self.open_batches.pop(user_id)
+            messages = collection_data.get('messages', [])
+            dashboard_msg = collection_data.get('dashboard_message')
+
             if not messages:
                 if dashboard_msg: await self.send_with_protection(dashboard_msg.delete)
                 return
@@ -137,8 +158,11 @@ class Bot(Client):
             logger.exception(f"CRITICAL Error finalizing collection for user {user_id}: {e}")
             if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, f"❌ **Error!**\n\nAn unexpected error occurred while processing your files.")
         finally:
-            if user_id in self.open_batches and not self.open_batches[user_id]:
-                del self.open_batches[user_id]
+            self.processing_users.discard(user_id)
+            if user_id in self.waiting_files and self.waiting_files[user_id]:
+                logger.info(f"Starting new collection for user {user_id} with {len(self.waiting_files[user_id])} waiting files.")
+                waiting_messages = self.waiting_files.pop(user_id)
+                await self._start_new_collection(user_id, waiting_messages)
 
     async def file_processor_worker(self):
         logger.info("File Processor Worker started.")
@@ -154,21 +178,15 @@ class Bot(Client):
 
                 await save_file_data(user_id, message, copied_message, copied_message)
                 
+                if user_id in self.processing_users:
+                    self.waiting_files.setdefault(user_id, []).append(copied_message)
+                    logger.info(f"User {user_id} is processing. Added file to waiting list (total waiting: {len(self.waiting_files[user_id])}).")
+                    continue
+                
                 loop = asyncio.get_event_loop()
 
                 if user_id not in self.open_batches:
-                    dashboard_msg = await self.send_with_protection(
-                        self.send_message,
-                        chat_id=user_id,
-                        text=f"**File Detected**\n\n"
-                             f"📊 **Files Collected:** `1`\n"
-                             f"⏳ **Status:** Started a 10-second window to collect more files..."
-                    )
-                    self.open_batches[user_id] = {
-                        'messages': [copied_message],
-                        'timer': loop.call_later(10, lambda u=user_id: asyncio.create_task(self._finalize_collection(u))),
-                        'dashboard_message': dashboard_msg
-                    }
+                    await self._start_new_collection(user_id, [copied_message])
                 else:
                     collection_data = self.open_batches[user_id]
                     if collection_data.get('timer'): collection_data['timer'].cancel()
@@ -182,11 +200,11 @@ class Bot(Client):
                                dashboard_msg.edit_text,
                                f"**File Detected**\n\n"
                                f"📊 **Files Collected:** `{len(collection_data['messages'])}`\n"
-                               f"⏳ **Status:** Resetting 10-second window to collect more files..."
+                               f"⏳ **Status:** Resetting 5-second window to collect more files..."
                            )
                         except MessageNotModified: pass
                     
-                    collection_data['timer'] = loop.call_later(10, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
+                    collection_data['timer'] = loop.call_later(5, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
 
             except Exception as e:
                 logger.exception(f"CRITICAL Error in file_processor_worker's main loop: {e}")
