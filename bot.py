@@ -174,13 +174,22 @@ class Bot(Client):
     async def start(self):
         await super().start()
         self.me = await self.get_me()
+
+        # --- THIS IS THE FIX ---
+        # Forcefully hydrate the session with all dialogs to cache peer data
+        logger.info("Hydrating session with dialogs to prevent Peer ID errors...")
+        try:
+            async for _ in self.get_dialogs():
+                pass
+            logger.info("Session hydration complete.")
+        except Exception as e:
+            logger.error(f"Could not hydrate session: {e}")
+        # --- END OF FIX ---
         
         if self.owner_db_channel:
             try:
                 await self.get_chat(self.owner_db_channel)
                 logger.info(f"Successfully connected to Owner DB (Log Channel) [{self.owner_db_channel}]")
-            except PeerIdInvalid:
-                logger.warning(f"Bot is not in the Owner DB Channel ({self.owner_db_channel}). Session may need to update. Bot will continue starting.")
             except Exception as e:
                 logger.error(f"Could not verify Owner DB Channel. Ensure the bot is an admin. Error: {e}")
         else: 
