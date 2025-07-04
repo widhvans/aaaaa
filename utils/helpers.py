@@ -37,7 +37,7 @@ def clean_and_parse_filename(name: str):
     titles, seasons, episodes, and every quality tag.
     """
     original_name = name.replace('.', ' ').replace('_', ' ')
-    
+
     # --- Stage 1: High-Precision Extraction ---
     
     # Extract Year first, as it's a clear marker
@@ -62,7 +62,7 @@ def clean_and_parse_filename(name: str):
             episode_str = f"E{episode_nums[0].zfill(2)}-E{episode_nums[-1].zfill(2)}"
         elif len(episode_nums) == 1:
             episode_str = f"E{episode_nums[0].zfill(2)}"
-
+    
     # Expanded list of all possible quality, source, and audio tags
     tags_to_find = [
         '1080p', '720p', '480p', '540p', 'WEB-DL', 'WEBRip', 'BluRay', 'HDTC', 'HDRip',
@@ -80,12 +80,16 @@ def clean_and_parse_filename(name: str):
     
     quality_tags = " | ".join(sorted(list(standardized_tags), key=lambda x: x.lower()))
 
+
     # --- Stage 2: Aggressive Title Cleaning ---
     
-    # Start with the full name and carve away all extracted data
-    cleaned_title = original_name
+    # Start with what PTN thinks is the title
+    ptn_info = PTN.parse(original_name)
+    cleaned_title = ptn_info.get('title', original_name)
 
-    if year: cleaned_title = cleaned_title.replace(year_match.group(0), '')
+    # Be much more aggressive with cleaning
+    # Remove everything that we've already extracted
+    if year: cleaned_title = re.sub(r'(\d{4})', '', cleaned_title)
     if is_series and series_match:
         cleaned_title = re.sub(re.escape(series_match.group(0)), '', cleaned_title, flags=re.IGNORECASE)
     
@@ -96,10 +100,12 @@ def clean_and_parse_filename(name: str):
     for junk in full_junk_list:
         cleaned_title = re.sub(r'\b' + re.escape(junk) + r'\b', '', cleaned_title, flags=re.IGNORECASE)
     
-    # Remove any remaining junk patterns (like standalone numbers/letters)
-    cleaned_title = re.sub(r'\b[Ee]\b', '', cleaned_title) # Remove standalone 'E'
-    cleaned_title = re.sub(r'\s\d\s\d\s', '', cleaned_title) # Remove ' 5 1 '
+    # Remove remaining junk words and symbols
+    more_junk = ['completed', 'web series', 'mkv', 'esubs', 'du', 'au', 'dual', 'audi', 'audiol']
+    junk_regex = r'\b(' + '|'.join(re.escape(word) for word in more_junk) + r')\b'
+    cleaned_title = re.sub(junk_regex, '', cleaned_title, flags=re.I)
     cleaned_title = re.sub(r'[\(\)\[\]\{\}\+@]', '', cleaned_title) # Remove symbols
+    cleaned_title = re.sub(r'\s\d\s\d\s', '', cleaned_title) # Remove ' 5 1 '
     cleaned_title = ' '.join(cleaned_title.split()).strip() # Consolidate spaces
 
     # --- Stage 3: Assemble Final Data ---
