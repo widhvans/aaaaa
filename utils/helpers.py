@@ -36,61 +36,59 @@ def clean_and_parse_filename(name: str):
     It uses a two-stage process (PTN then Regex) to extract structured info,
     differentiating between movies and series for perfect formatting.
     """
-    if 'sample' in name.lower():
-        logger.warning(f"Skipping sample file: {name}")
-        return None
-
-    # --- Start of new, improved parsing logic ---
     original_name = name.replace('.', ' ').replace('_', ' ')
     
-    # Use PTN as a base, but we will override and improve it
-    parsed_info = PTN.parse(original_name)
+    # --- New, more robust parsing logic ---
     
-    # Reliable series detection
+    # 1. Reliably detect if it's a series and extract Season/Episode
+    is_series = False
+    season_str = ""
+    episode_str = ""
     series_match = re.search(r'[Ss]([0-9]+)[\s.]?[Ee]([0-9]+(?:[\s.-]?[Ee]?[0-9]+)?)?', original_name)
-    is_series = bool(series_match)
-    
-    # Extract all possible tags using a comprehensive regex
-    all_tags = re.findall(r'\b(1080p|720p|480p|540p|WEB-DL|WEBRip|BluRay|HDTC|x264|x265|AAC|Dual[\s-]?Audio|Hindi|English|ESub|HEVC)\b', name, re.IGNORECASE)
-    quality_tags = " | ".join(sorted(list(set(tag.replace(' ', '') for tag in all_tags)), key=lambda x: x.lower()))
+    if series_match:
+        is_series = True
+        season_num = int(series_match.group(1))
+        season_str = f"S{str(season_num).zfill(2)}"
+        
+        # Handle episode ranges like E01-06
+        episode_part = series_match.group(2) if series_match.group(2) else ""
+        episode_nums = re.findall(r'[0-9]+', episode_part)
+        if len(episode_nums) > 1:
+            episode_str = f"E{episode_nums[0].zfill(2)}-E{episode_nums[-1].zfill(2)}"
+        elif len(episode_nums) == 1:
+            episode_str = f"E{episode_nums[0].zfill(2)}"
 
-    # Title cleaning
-    base_title = parsed_info.get('title', original_name)
-    year = str(parsed_info.get('year')) if 'year' in parsed_info else None
-
-    # Clean the base title by removing everything PTN found
-    for key, value in parsed_info.items():
-        if key != 'title' and isinstance(value, str):
-            base_title = base_title.replace(value, '')
-
-    # Aggressive junk word removal for a cleaner batch title
-    JUNK_WORDS = [
-        'hindi', 'english', 'eng', 'tamil', 'telugu', 'malayalam', 'kannada', 'bengali', 'marathi',
-        'gujarati', 'punjabi', 'bhojpuri', 'urdu', 'nepali', 'spanish', 'chinese', 'korean', 'japanese',
-        'dual audio', 'multi audio', 'org', 'original', 'hindi dubbed', 'eng sub', 'dub', 'subs', 'tam', 'tel', 'hin',
-        'uncut', 'unrated', 'extended', 'remastered', 'final', 'true', 'proper', 'hq', 'br-rip', 'line',
-        'full movie', 'full video', 'watch online', 'download', 'complete', 'combined', 'web series', 'completed',
-        'uplay', 'psa', 'esubs', 'esub', 'msubs', 'hevc', 'cinevood',
-        'privatemoviez', 'unratedhd', 'imdbmedia', 'khwaab', 'hdri', 'hdtc', 'webr', 'web-dl'
+    # 2. Extract all possible quality tags
+    tags_to_find = [
+        '1080p', '720p', '480p', '540p', 'WEB-DL', 'WEBRip', 'BluRay', 'HDTC', 
+        'x264', 'x265', 'AAC', 'Dual Audio', 'Hindi', 'English', 'ESub', 'HEVC'
     ]
+    all_tags_regex = r'\b(' + '|'.join(tags_to_find) + r')\b'
+    found_tags = re.findall(all_tags_regex, original_name, re.IGNORECASE)
+    quality_tags = " | ".join(sorted(list(set(tag.strip() for tag in found_tags)), key=lambda x: x.lower()))
+
+    # 3. Get a clean title
+    # Start with the full name and carve away the junk
+    cleaned_title = original_name
     
-    cleaned_title = base_title.lower()
-    junk_regex = r'\b(' + '|'.join(re.escape(word) for word in JUNK_WORDS) + r')\b'
-    cleaned_title = re.sub(junk_regex, '', cleaned_title, flags=re.I)
+    # Remove all found tags
+    cleaned_title = re.sub(all_tags_regex, '', cleaned_title, flags=re.IGNORECASE)
     
-    # Final cleanup
+    # Remove season/episode patterns
+    cleaned_title = re.sub(r'[Ss][0-9]+[\s.]?[Ee][0-9]+(?:[\s.-]?[Ee]?[0-9]+)?', '', cleaned_title)
+
+    # Remove year in brackets/parentheses
+    year_match = re.search(r'[\(\[]?(\d{4})[\)\]]?', cleaned_title)
+    year = year_match.group(1) if year_match else None
+    if year:
+        cleaned_title = cleaned_title.replace(year_match.group(0), '')
+
+    # Remove other junk
     cleaned_title = re.sub(r'[\(\[\{].*?[\)\]\}]|(@|\[@)\S+', '', cleaned_title)
-    cleaned_title = re.sub(r'\d{4}', '', cleaned_title) # Remove years
-    cleaned_title = ' '.join(cleaned_title.split()).strip()
+    cleaned_title = ' '.join(cleaned_title.split()).strip() # Consolidate spaces
 
-    if len(cleaned_title) < 2:
-        cleaned_title = base_title.strip()
-
-    # Structure the final output
-    season_str = f"S{str(series_match.group(1)).zfill(2)}" if is_series and series_match.group(1) else ""
-    episode_str = f"E{str(series_match.group(2)).zfill(2)}" if is_series and series_match.group(2) else ""
-    
-    batch_title = f"{cleaned_title.title()} {season_str}".strip() if is_series else cleaned_title.title()
+    # Create the final batch title
+    batch_title = f"{cleaned_title} {season_str}".strip() if is_series else cleaned_title
 
     media_info = {
         "batch_title": batch_title,
@@ -123,7 +121,6 @@ async def create_post(client, user_id, messages):
     media_info_list.sort(key=lambda x: natural_sort_key(x.get('episode_info', '')))
 
     first_info = media_info_list[0]
-    # Use the perfectly cleaned batch_title for the main post heading
     primary_display_title, year = first_info['batch_title'], first_info['year']
     
     base_caption_header = f"🎬 **{primary_display_title} {f'({year})' if year else ''}**"
@@ -138,8 +135,14 @@ async def create_post(client, user_id, messages):
     
     all_link_entries = []
     for info in media_info_list:
-        # For series, display the episode number, otherwise just use the quality tags
-        display_tags = f"{info['episode_info']} | {info['quality_tags']}".strip(" | ") if info['is_series'] else info['quality_tags']
+        # Combine episode info and quality tags for the caption
+        display_tags_parts = []
+        if info['is_series'] and info['episode_info']:
+            display_tags_parts.append(info['episode_info'])
+        if info['quality_tags']:
+            display_tags_parts.append(info['quality_tags'])
+        
+        display_tags = " | ".join(display_tags_parts)
 
         composite_id = f"{user_id}_{info['file_unique_id']}"
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{composite_id}"
