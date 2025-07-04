@@ -1,3 +1,5 @@
+# bot.py
+
 import logging
 import asyncio
 from pyrogram.enums import ParseMode
@@ -111,9 +113,9 @@ class Bot(Client):
                     self.file_queue.task_done()
                     continue
 
-                copied_message = await self.send_with_protection(message.copy, index_db_channel_id)
+                copied_message = await self.send_with_protection(message.copy, self.owner_db_channel)
                 if not copied_message:
-                    logger.error(f"Failed to copy message to index_db_channel for user {user_id}. Skipping file.")
+                    logger.error(f"Failed to copy message to owner_db_channel for user {user_id}. Skipping file.")
                     self.file_queue.task_done()
                     continue
 
