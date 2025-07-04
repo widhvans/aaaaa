@@ -10,7 +10,7 @@ from database.db import (
     get_user, update_user, add_to_list, remove_from_list,
     get_user_file_count, add_footer_button, remove_footer_button,
     get_all_user_files, get_paginated_files, search_user_files,
-    add_user, set_post_channel, set_index_db_channel
+    add_user, set_post_channel, set_index_db_channel, get_index_db_channel
 )
 from utils.helpers import go_back_button, get_main_menu, create_post, clean_and_parse_filename, calculate_title_similarity, notify_and_remove_invalid_channel
 from features.shortener import validate_shortener
@@ -425,20 +425,24 @@ async def remove_footer_handler(client, query):
 @Client.on_callback_query(filters.regex(r"manage_(post|db)_ch"))
 async def manage_channels_handler(client, query):
     user_id, ch_type = query.from_user.id, query.data.split("_")[1]
-    ch_type_key, ch_type_name = f"{ch_type}_channels", "Post" if ch_type == "post" else "Database"
+    
+    if ch_type == 'post':
+        ch_type_key, ch_type_name = "post_channels", "Post"
+    else:
+        ch_type_key, ch_type_name = "index_db_channel", "Index DB"
     
     user_data = await get_user(user_id)
     if not user_data:
         await add_user(user_id)
         user_data = await get_user(user_id)
-        if not user_data:
-            return await query.answer("Could not find your profile. Please /start the bot again.", show_alert=True)
 
-    channels = user_data.get(ch_type_key, [])
-    
     text = f"**Manage Your {ch_type_name} Channels**\n\n"
     buttons = []
     
+    channels = user_data.get(ch_type_key, [])
+    if not isinstance(channels, list):
+        channels = [channels] if channels else []
+
     if channels:
         await query.answer("Checking channel status...")
         text += "Here are your connected channels. Click to remove.\n\n"
@@ -464,7 +468,14 @@ async def manage_channels_handler(client, query):
 @Client.on_callback_query(filters.regex(r"rm_(post|db)_-?\d+"))
 async def remove_channel_handler(client, query):
     _, ch_type, ch_id_str = query.data.split("_")
-    await remove_from_list(query.from_user.id, f"{ch_type}_channels", int(ch_id_str))
+    user_id = query.from_user.id
+    ch_id = int(ch_id_str)
+    
+    if ch_type == 'post':
+        await remove_from_list(user_id, "post_channels", ch_id)
+    else:
+        await update_user(user_id, "index_db_channel", None)
+        
     await query.answer("Channel removed!", show_alert=True)
     query.data = f"manage_{ch_type}_ch"
     await manage_channels_handler(client, query)
@@ -472,39 +483,19 @@ async def remove_channel_handler(client, query):
 @Client.on_callback_query(filters.regex(r"add_(post|db)_ch"))
 async def add_channel_prompt(client, query):
     user_id, ch_type_short = query.from_user.id, query.data.split("_")[1]
-    ch_type_key, ch_type_name = f"{ch_type_short}_channels", "Post" if ch_type_short == "post" else "Database"
-
-    user_settings = await get_user(user_id)
-    if not user_settings:
-        await add_user(user_id)
-        user_settings = await get_user(user_id)
-        if not user_settings:
-            return await query.answer("Could not find your profile. Please /start the bot again.", show_alert=True)
-
-    current_channels = user_settings.get(ch_type_key, [])
-    limit = 1 if ch_type_short == 'db' else 3
-    if len(current_channels) >= limit:
-        await query.message.edit_text(
-            f"**🚫 Limit Reached**\n\n"
-            f"You have reached the channel limit for this type.\n\n"
-            f"▫️ **Limit:** `{limit}` {ch_type_name} Channel(s)\n"
-            f"▫️ **Currently:** You have `{len(current_channels)}` {ch_type_name} Channel(s)\n\n"
-            f"Please go back and remove an existing or Ghost Channel first to add a new one.",
-            reply_markup=go_back_button(user_id)
-        )
-        return
-
+    ch_type_name = "Post" if ch_type_short == "post" else "Index DB"
+    
     try:
         prompt = await query.message.edit_text(f"Forward a message from your target **{ch_type_name} Channel**.\n\nI must be an admin there.", reply_markup=go_back_button(user_id))
         response = await client.listen(chat_id=user_id, filters=filters.forwarded, timeout=300)
         
         if response.forward_from_chat:
+            channel_id = response.forward_from_chat.id
             if ch_type_short == 'post':
-                await set_post_channel(user_id, response.forward_from_chat.id)
+                await set_post_channel(user_id, channel_id)
             else:
-                await set_index_db_channel(user_id, response.forward_from_chat.id)
+                await set_index_db_channel(user_id, channel_id)
 
-            await add_to_list(user_id, ch_type_key, response.forward_from_chat.id)
             await response.reply_text(f"✅ Connected to **{response.forward_from_chat.title}**.", reply_markup=go_back_button(user_id))
         else: 
             await response.reply_text("This is not a valid forwarded message from a channel.", reply_markup=go_back_button(user_id))
@@ -545,7 +536,7 @@ async def set_other_links_handler(client, query):
     }
     prompt_text, key = prompts[action]
     
-    prompt = None # Define prompt here to access in finally block
+    prompt = None
     try:
         if action == "download":
             user = await get_user(user_id)
@@ -568,7 +559,7 @@ async def set_other_links_handler(client, query):
             await update_user(user_id, key, value)
             await response.reply("✅ FSub channel updated!", reply_markup=go_back_button(user_id))
 
-        else:  # action == "download"
+        else:
             url_to_check = response.text.strip()
             if not url_to_check.startswith(("http://", "https://")):
                 url_to_check = "https://" + url_to_check
@@ -579,7 +570,6 @@ async def set_other_links_handler(client, query):
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.head(url_to_check, timeout=5, allow_redirects=True) as resp:
-                        # Check for a successful status code (2xx or 3xx)
                         if resp.status in range(200, 400):
                             is_valid = True
             except Exception as e:
@@ -590,7 +580,6 @@ async def set_other_links_handler(client, query):
                 await update_user(user_id, key, url_to_check)
                 await prompt.edit_text("✅ **Success!**\n\nYour 'How to Download' link has been verified and saved.")
                 await asyncio.sleep(3)
-                # Show the updated menu
                 await how_to_download_menu_handler(client, query)
 
             else:
@@ -610,13 +599,12 @@ async def set_other_links_handler(client, query):
         if prompt:
             await safe_edit_message(prompt, text=f"An error occurred: {e}", reply_markup=go_back_button(user_id))
     finally:
-        # Clean up messages if they exist
         if 'response' in locals() and response:
             try:
                 await response.delete()
             except:
                 pass
-        if action == 'fsub' and prompt: # For fsub, we delete the prompt after success
+        if action == 'fsub' and prompt:
              try:
                 await prompt.delete()
              except:
@@ -628,7 +616,6 @@ async def set_shortener_handler(client, query):
     user_id = query.from_user.id
     
     try:
-        # Step 1: Get Domain
         prompt_msg = await query.message.edit_text(
             "**🔗 Step 1/2: Set Domain**\n\n"
             "Please send your shortener website's domain name (e.g., `example.com`).",
@@ -638,7 +625,6 @@ async def set_shortener_handler(client, query):
         domain = domain_msg.text.strip()
         await domain_msg.delete()
 
-        # Step 2: Get API Key
         await prompt_msg.edit_text(
             f"**🔗 Step 2/2: Set API Key**\n\n"
             f"Domain: `{domain}`\n"
@@ -649,18 +635,15 @@ async def set_shortener_handler(client, query):
         api_key = api_msg.text.strip()
         await api_msg.delete()
         
-        # Step 3: Validate
         await prompt_msg.edit_text("⏳ **Testing your credentials...**\nPlease wait a moment.")
         is_valid = await validate_shortener(domain, api_key)
 
         if is_valid:
-            # Step 4a: Success
             await update_user(user_id, "shortener_url", domain)
             await update_user(user_id, "shortener_api", api_key)
             await prompt_msg.edit_text("✅ **Success!**\n\nYour shortener has been verified and saved.")
             await asyncio.sleep(3)
         else:
-            # Step 4b: Failure
             await prompt_msg.edit_text(
                 "❌ **Validation Failed!**\n\n"
                 "The domain or API key you provided appears to be incorrect. "
@@ -668,9 +651,8 @@ async def set_shortener_handler(client, query):
                 "Please check your credentials and try again.",
                 reply_markup=go_back_button(user_id)
             )
-            return # Stop the function here
+            return
 
-        # Final Step: Show updated menu
         text, markup = await get_shortener_menu_parts(user_id)
         await safe_edit_message(prompt_msg, text=text, reply_markup=markup)
 
