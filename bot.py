@@ -3,7 +3,6 @@
 import logging
 import asyncio
 import time
-import re
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait, PeerIdInvalid, MessageNotModified
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -14,6 +13,7 @@ from database.db import (
     get_user, save_file_data, get_post_channel, get_index_db_channel
 )
 from utils.helpers import create_post, get_title_key, notify_and_remove_invalid_channel
+from thefuzz import fuzz
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()])
@@ -51,13 +51,11 @@ class Bot(Client):
         self.file_queue = asyncio.Queue()
         self.open_batches = {}
         self.search_cache = {}
-        
-        # For dashboard edit throttling
-        self.last_dashboard_edit = {}
 
-        # Caching for performance
-        self.imdb_cache = {}
-        self.poster_cache = {}
+        # For the new time-based collection model
+        self.processing_users = set()
+        self.waiting_files = {}
+        self.last_dashboard_edit_time = {}
         
         self.vps_ip = Config.VPS_IP
         self.vps_port = Config.VPS_PORT
@@ -72,119 +70,107 @@ class Bot(Client):
             except Exception as e:
                 logger.error(f"An error occurred in send_with_protection: {e}", exc_info=True)
                 return None
-    
-    def _get_significant_words(self, title):
-        """Extracts words of 5 or more letters from a title for matching."""
-        if not title:
-            return set()
-        # Remove special characters and split into words
-        words = re.split(r'[\s._-]+', title.lower())
-        # Filter for words with 5 or more alphanumeric characters
-        return {word for word in words if len(re.sub(r'[^a-zA-Z0-9]', '', word)) >= 5}
 
-    async def find_matching_batch_key(self, user_id, title_key):
-        """Finds a matching batch key based on shared significant words."""
-        if user_id not in self.open_batches:
-            return None
+    async def _start_new_collection(self, user_id, initial_messages):
+        """Helper function to create a new collection window and dashboard."""
+        loop = asyncio.get_event_loop()
+        dashboard_msg = await self.send_with_protection(
+            self.send_message,
+            chat_id=user_id,
+            text=f"**File(s) Detected**\n\n"
+                 f"📊 **Files Collected:** `{len(initial_messages)}`\n"
+                 f"⏳ **Status:** Started a 50-second window to collect more files..."
+        )
+        self.open_batches[user_id] = {
+            'messages': initial_messages,
+            'timer': loop.call_later(50, lambda u=user_id: asyncio.create_task(self._finalize_collection(u))),
+            'dashboard_message': dashboard_msg
+        }
+        self.last_dashboard_edit_time[user_id] = time.time()
 
-        new_file_words = self._get_significant_words(title_key)
-        if not new_file_words:
-            return None
-
-        for existing_key in self.open_batches[user_id]:
-            existing_key_words = self._get_significant_words(existing_key)
-            if not new_file_words.isdisjoint(existing_key_words): # isdisjoint is False if there's an intersection
-                return existing_key
-        
-        return None
-
-    async def _update_processing_dashboard(self, dashboard_msg, total_files, processed_files_count, start_time):
-        """A background task to update the dashboard with progress and ETA."""
-        while not processed_files_count.is_set():
-            await asyncio.sleep(5)
-            processed_count = processed_files_count.get_value()
-            if processed_count > 0:
-                elapsed_time = time.time() - start_time
-                time_per_file = elapsed_time / processed_count
-                remaining_files = total_files - processed_count
-                eta_seconds = int(time_per_file * remaining_files)
-                eta_str = f"{eta_seconds // 60}m {eta_seconds % 60}s"
-                progress_text = (
-                    f"**Processing Batch...**\n\n"
-                    f"⚙️ **Status:** Processing file `{processed_count}/{total_files}`\n"
-                    f"⏱️ **ETA:** Approximately `{eta_str}`"
-                )
-                try:
-                    await self.send_with_protection(dashboard_msg.edit_text, progress_text)
-                except MessageNotModified:
-                    pass
-
-    async def _finalize_batch(self, user_id, batch_key):
-        if user_id not in self.open_batches or batch_key not in self.open_batches[user_id]:
-            return
-        
-        batch_data = self.open_batches[user_id].pop(batch_key)
-        messages = batch_data.get('messages', [])
-        dashboard_msg = batch_data.get('dashboard_message')
-
-        # --- Live Dashboard Setup ---
-        class Counter: # Helper to pass a mutable int to the background task
-            def __init__(self): self.value = 0; self._event = asyncio.Event()
-            def set_value(self, val): self.value = val
-            def get_value(self): return self.value
-            def is_set(self): return self._event.is_set()
-            def set(self): self._event.set()
-
-        processed_files_count = Counter()
-        updater_task = None
-        start_time = time.time()
-        
+    async def _finalize_collection(self, user_id):
+        self.processing_users.add(user_id)
         try:
+            if user_id not in self.open_batches or not self.open_batches[user_id]:
+                return
+
+            collection_data = self.open_batches.pop(user_id)
+            messages = collection_data.get('messages', [])
+            dashboard_msg = collection_data.get('dashboard_message')
+
             if not messages:
                 if dashboard_msg: await self.send_with_protection(dashboard_msg.delete)
                 return
 
+            logical_batches = {}
             if dashboard_msg:
-                updater_task = asyncio.create_task(
-                    self._update_processing_dashboard(dashboard_msg, len(messages), processed_files_count, start_time)
-                )
+                await self.send_with_protection(dashboard_msg.edit_text, f"⏳ Grouping `{len(messages)}` collected files into logical batches...")
+
+            for msg in messages:
+                filename = getattr(msg, msg.media.value).file_name
+                batch_title = await get_title_key(filename)
+                if not batch_title:
+                    batch_title = "Uncategorized"
+                
+                if batch_title not in logical_batches:
+                    logical_batches[batch_title] = []
+                logical_batches[batch_title].append(msg)
+
+            total_batches = len(logical_batches)
+            if dashboard_msg:
+                await self.send_with_protection(dashboard_msg.edit_text, f"✅ Found `{total_batches}` unique batch(es). Starting to process and post...")
+            await asyncio.sleep(2)
 
             user = await get_user(user_id)
             if not user: return
+            
             post_channel_id = await get_post_channel(user_id)
+            if not post_channel_id:
+                if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, "❌ **Error!**\n\nNo Post Channel is configured. Cannot create post.")
+                return
 
-            posts_to_send = await create_post(self, user_id, messages, self.imdb_cache, self.poster_cache, processed_files_count)
-            processed_files_count.set() # Signal completion to updater task
-            
-            if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, f"✅ Grouping complete. Now posting to your channel...")
-            
-            for post in posts_to_send:
-                poster, caption, footer = post
-                if poster:
-                    await self.send_with_protection(self.send_photo, post_channel_id, photo=poster, caption=caption, reply_markup=footer)
-                else:
-                    await self.send_with_protection(self.send_message, post_channel_id, caption, reply_markup=footer, disable_web_page_preview=True)
-                await asyncio.sleep(1.5)
+            if not await notify_and_remove_invalid_channel(self, user_id, post_channel_id, "Post"):
+                 if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, "❌ **Error!**\n\nCould not access the configured Post Channel.")
+                 return
 
-            # --- Final Notification ---
-            if dashboard_msg: await self.send_with_protection(dashboard_msg.delete)
-            await self.send_message(user_id, f"✅ **Batch Complete!**\n\nYour batch for **'{batch_key}'** with `{len(messages)}` files has been posted.")
+            processed_count = 0
+            for batch_title, batch_messages in logical_batches.items():
+                processed_count += 1
+                if dashboard_msg:
+                    await self.send_with_protection(dashboard_msg.edit_text,
+                                                  f"**Processing Batch {processed_count}/{total_batches}**\n\n"
+                                                  f"🎬 **Batch:** `{batch_title}`\n"
+                                                  f"⏳ **Status:** Creating post for `{len(batch_messages)}` file(s)...")
+
+                posts_to_send = await create_post(self, user_id, batch_messages)
+                
+                for post in posts_to_send:
+                    poster, caption, footer = post
+                    if poster:
+                        await self.send_with_protection(self.send_photo, post_channel_id, photo=poster, caption=caption, reply_markup=footer)
+                    else:
+                        await self.send_with_protection(self.send_message, post_channel_id, caption, reply_markup=footer, disable_web_page_preview=True)
+                    await asyncio.sleep(2)
+
+            if dashboard_msg:
+                await self.send_with_protection(dashboard_msg.edit_text, f"✅ **All Done!**\n\nSuccessfully processed and posted all `{total_batches}` batches.")
+                await asyncio.sleep(10)
+                await self.send_with_protection(dashboard_msg.delete)
 
         except Exception as e:
-            logger.exception(f"CRITICAL Error finalizing batch {batch_key} for user {user_id}: {e}")
-            if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, f"❌ **Error!**\n\nAn unexpected error occurred while processing batch `{batch_key}`.")
+            logger.exception(f"CRITICAL Error finalizing collection for user {user_id}: {e}")
+            if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, f"❌ **Error!**\n\nAn unexpected error occurred while processing your files.")
         finally:
-            processed_files_count.set()
-            if updater_task and not updater_task.done():
-                updater_task.cancel()
-            if user_id in self.open_batches and not self.open_batches[user_id]:
-                del self.open_batches[user_id]
-            self.last_dashboard_edit.pop((user_id, batch_key), None)
+            self.processing_users.discard(user_id)
+            self.last_dashboard_edit_time.pop(user_id, None)
+            if user_id in self.waiting_files and self.waiting_files[user_id]:
+                logger.info(f"Starting new collection for user {user_id} with {len(self.waiting_files[user_id])} waiting files.")
+                waiting_messages = self.waiting_files.pop(user_id)
+                await self._start_new_collection(user_id, waiting_messages)
 
     async def file_processor_worker(self):
         logger.info("File Processor Worker started.")
-        DASHBOARD_EDIT_THROTTLE_SECONDS = 4
-        BATCH_INACTIVITY_SECONDS = 15
+        DASHBOARD_EDIT_THROTTLE_SECONDS = 5
         while True:
             try:
                 message, user_id = await self.file_queue.get()
@@ -197,56 +183,38 @@ class Bot(Client):
 
                 await save_file_data(user_id, message, copied_message, copied_message)
                 
-                filename = getattr(copied_message, copied_message.media.value).file_name
-                title_key = await get_title_key(filename, self.imdb_cache)
-                if not title_key: continue
-
-                self.open_batches.setdefault(user_id, {})
+                if user_id in self.processing_users:
+                    self.waiting_files.setdefault(user_id, []).append(copied_message)
+                    logger.info(f"User {user_id} is processing. Added file to waiting list (total waiting: {len(self.waiting_files[user_id])}).")
+                    continue
+                
                 loop = asyncio.get_event_loop()
 
-                matched_key = await self.find_matching_batch_key(user_id, title_key)
-                batch_key_to_use = matched_key if matched_key else title_key
-
-                if batch_key_to_use in self.open_batches[user_id]:
-                    batch_data = self.open_batches[user_id][batch_key_to_use]
-                    if batch_data.get('timer'): batch_data['timer'].cancel()
+                if user_id not in self.open_batches:
+                    await self._start_new_collection(user_id, [copied_message])
+                else:
+                    collection_data = self.open_batches[user_id]
+                    if collection_data.get('timer'): collection_data['timer'].cancel()
                     
-                    batch_data['messages'].append(copied_message)
+                    collection_data['messages'].append(copied_message)
                     
-                    dashboard_msg = batch_data.get('dashboard_message')
-                    edit_key = (user_id, batch_key_to_use)
-                    last_edit_time = self.last_dashboard_edit.get(edit_key, 0)
+                    dashboard_msg = collection_data.get('dashboard_message')
                     
-                    if (time.time() - last_edit_time) > DASHBOARD_EDIT_THROTTLE_SECONDS:
+                    # Throttle dashboard edits to prevent FloodWait
+                    last_edit = self.last_dashboard_edit_time.get(user_id, 0)
+                    if (time.time() - last_edit) > DASHBOARD_EDIT_THROTTLE_SECONDS:
                         if dashboard_msg:
                             try:
                                await self.send_with_protection(
                                    dashboard_msg.edit_text,
-                                   f"**Batch Update**\n\n"
-                                   f"🎬 **Batch:** `{batch_key_to_use}`\n"
-                                   f"📊 **Files Collected:** `{len(batch_data['messages'])}`\n"
-                                   f"⏳ **Status:** Added new file. Waiting {BATCH_INACTIVITY_SECONDS} more seconds..."
+                                   f"**File Detected**\n\n"
+                                   f"📊 **Files Collected:** `{len(collection_data['messages'])}`\n"
+                                   f"⏳ **Status:** Resetting 50-second window to collect more files..."
                                )
-                               self.last_dashboard_edit[edit_key] = time.time()
+                               self.last_dashboard_edit_time[user_id] = time.time()
                             except MessageNotModified: pass
                     
-                    batch_data['timer'] = loop.call_later(BATCH_INACTIVITY_SECONDS, lambda u=user_id, k=batch_key_to_use: asyncio.create_task(self._finalize_batch(u, k)))
-                else:
-                    dashboard_msg = await self.send_with_protection(
-                        self.send_message,
-                        chat_id=user_id,
-                        text=f"**New Batch Detected**\n\n"
-                             f"🎬 **Batch:** `{batch_key_to_use}`\n"
-                             f"📊 **Files Collected:** `1`\n"
-                             f"⏳ **Status:** Collecting files. Waiting for {BATCH_INACTIVITY_SECONDS} seconds..."
-                    )
-                    
-                    self.open_batches[user_id][batch_key_to_use] = {
-                        'messages': [copied_message],
-                        'timer': loop.call_later(BATCH_INACTIVITY_SECONDS, lambda u=user_id, k=batch_key_to_use: asyncio.create_task(self._finalize_batch(u, k))),
-                        'dashboard_message': dashboard_msg
-                    }
-                    self.last_dashboard_edit[(user_id, batch_key_to_use)] = time.time()
+                    collection_data['timer'] = loop.call_later(50, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
 
             except Exception as e:
                 logger.exception(f"CRITICAL Error in file_processor_worker's main loop: {e}")
