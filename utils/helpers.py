@@ -10,6 +10,7 @@ from config import Config
 from database.db import get_user, remove_from_list, update_user
 from features.poster import get_poster
 from thefuzz import fuzz
+from Google Search import Google Search
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,35 @@ def format_bytes(size):
     elif n == 2: return f"{round(size)} {power_labels[n]}"
     else: return f"{int(size)} {power_labels[n]}"
 
+def get_definitive_title_from_search(refined_title, year):
+    """
+    Uses a web search to find the official title from IMDb or TMDb.
+    """
+    if not refined_title:
+        return refined_title
+    try:
+        query = f'"{refined_title}" {year if year else ""} movie imdb'
+        search_results = Google Search(queries=[query])
+        
+        # Look for the first result that is from IMDb or TMDb
+        for result in search_results[0].results:
+            if "imdb.com/title" in result.url or "themoviedb.org" in result.url:
+                # Extract the title part, which is usually before the first parenthesis or hyphen
+                title_from_web = re.split(r'\(|\s-\s', result.source_title)[0].strip()
+                if len(title_from_web) > 3: # Basic sanity check
+                    logger.info(f"Web verification successful. Found definitive title: '{title_from_web}'")
+                    return title_from_web
+    except Exception as e:
+        logger.error(f"Error during web search for definitive title: {e}")
+    
+    logger.warning(f"Web verification failed, falling back to refined title: '{refined_title}'")
+    return refined_title
+
 def clean_and_parse_filename(name: str):
     """
     The definitive, final, intelligent parsing engine.
-    This version uses a multi-stage regex process to perfectly differentiate
-    titles, seasons, episodes, and every quality tag.
+    This version uses a multi-stage regex process and web verification
+    to perfectly differentiate titles, seasons, episodes, and every quality tag.
     """
     original_name = name.replace('.', ' ').replace('_', ' ')
 
@@ -70,7 +95,7 @@ def clean_and_parse_filename(name: str):
         'x264', 'x265', 'AAC', 'Dual Audio', 'Multi Audio', 'Hindi', 'English', 'ESub', 'HEVC', 
         'DDP5 1', 'DDP2 0', 'AMZN', 'Dua'
     ]
-    # Unnecessary tags to be removed from the final caption
+    # Unnecessary tags to be filtered out from the final caption
     unnecessary_tags = ['x264', 'x265', 'AAC', 'HEVC']
 
     all_tags_regex = r'\b(' + '|'.join(re.escape(tag) for tag in tags_to_find) + r')\b'
@@ -91,31 +116,35 @@ def clean_and_parse_filename(name: str):
     # --- Stage 2: Aggressive Title Cleaning ---
     
     # Start with the full name and carve away the junk
-    cleaned_title = original_name
+    refined_title = original_name
 
     # Remove all extracted information to isolate the title
-    if year: cleaned_title = cleaned_title.replace(year_match.group(0), '')
+    if year: refined_title = refined_title.replace(year_match.group(0), '')
     if is_series and series_match:
-        cleaned_title = re.sub(re.escape(series_match.group(0)), '', cleaned_title, flags=re.IGNORECASE)
+        refined_title = re.sub(re.escape(series_match.group(0)), '', refined_title, flags=re.IGNORECASE)
     
     # Remove all found tags and promotional junk
     promo_junk = ['SkymoviesHD', 'PMI', 'part002']
     full_junk_list = tags_to_find + promo_junk
     
     for junk in full_junk_list:
-        cleaned_title = re.sub(r'\b' + re.escape(junk) + r'\b', '', cleaned_title, flags=re.IGNORECASE)
+        refined_title = re.sub(r'\b' + re.escape(junk) + r'\b', '', refined_title, flags=re.IGNORECASE)
     
     # Remove remaining junk words and symbols
     more_junk = ['completed', 'web series', 'mkv', 'esubs', 'du', 'au', 'dual', 'audi', 'audiol']
     junk_regex = r'\b(' + '|'.join(re.escape(word) for word in more_junk) + r')\b'
-    cleaned_title = re.sub(junk_regex, '', cleaned_title, flags=re.I)
-    cleaned_title = re.sub(r'[\(\)\[\]\{\}\+@]', '', cleaned_title) # Remove symbols
-    cleaned_title = re.sub(r'\s\d\s\d\s', '', cleaned_title) # Remove ' 5 1 '
-    cleaned_title = ' '.join(cleaned_title.split()).strip() # Consolidate spaces
+    refined_title = re.sub(junk_regex, '', refined_title, flags=re.I)
+    refined_title = re.sub(r'[\(\)\[\]\{\}\+@]', '', refined_title) # Remove symbols
+    refined_title = re.sub(r'\s\d\s\d\s', '', refined_title) # Remove ' 5 1 '
+    refined_title = ' '.join(refined_title.split()).strip() # Consolidate spaces
 
-    # --- Stage 3: Assemble Final Data ---
+    # --- Stage 3: Web Verification for Definitive Title ---
     
-    batch_title = f"{cleaned_title} {season_str}".strip() if is_series else cleaned_title
+    definitive_title = get_definitive_title_from_search(refined_title, year)
+    
+    # --- Stage 4: Assemble Final Data ---
+    
+    batch_title = f"{definitive_title} {season_str}".strip() if is_series else definitive_title
 
     media_info = {
         "batch_title": batch_title,
