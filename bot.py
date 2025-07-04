@@ -110,13 +110,11 @@ class Bot(Client):
                 index_db_channel_id = await get_index_db_channel(user_id)
                 if not index_db_channel_id:
                     logger.error(f"Index DB Channel is not set for user {user_id}. File processing skipped.")
-                    self.file_queue.task_done()
                     continue
 
                 copied_message = await self.send_with_protection(message.copy, self.owner_db_channel)
                 if not copied_message:
                     logger.error(f"Failed to copy message to owner_db_channel for user {user_id}. Skipping file.")
-                    self.file_queue.task_done()
                     continue
 
                 stream_message = copied_message
@@ -128,7 +126,6 @@ class Bot(Client):
                 
                 if not title_key:
                     logger.warning(f"Could not generate a title key for filename: {filename}")
-                    self.file_queue.task_done()
                     continue
 
                 self.open_batches.setdefault(user_id, {})
@@ -157,8 +154,8 @@ class Bot(Client):
             except Exception as e:
                 logger.exception(f"CRITICAL Error in file_processor_worker's main loop: {e}")
             finally:
-                await asyncio.sleep(0.5)
                 self.file_queue.task_done()
+                await asyncio.sleep(0.5)
 
     async def start_web_server(self):
         from server.stream_routes import routes as stream_routes
