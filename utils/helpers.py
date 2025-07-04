@@ -217,6 +217,10 @@ async def create_post(client, user_id, messages, cache: dict):
             
     return final_posts
 
+def calculate_title_similarity(title1: str, title2: str) -> float:
+    """Calculates similarity between two titles."""
+    return fuzz.token_sort_ratio(title1.lower(), title2.lower())
+
 async def get_title_key(filename: str) -> str:
     media_info = await clean_and_parse_filename(filename)
     return media_info['batch_title'] if media_info else None
