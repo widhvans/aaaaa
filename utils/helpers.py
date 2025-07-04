@@ -41,24 +41,32 @@ def clean_and_parse_filename(name: str):
         return None
 
     try:
+        # Use PTN as the first pass for structured data
         parsed_info = PTN.parse(name.replace('.', ' ').replace('_', ' '))
         base_title = parsed_info.get('title', '')
         year = str(parsed_info.get('year')) if 'year' in parsed_info else None
         is_series = 'season' in parsed_info and 'episode' in parsed_info
         episode_info = f"S{str(parsed_info.get('season')).zfill(2)}E{str(parsed_info.get('episode')).zfill(2)}" if is_series else ''
+        
+        # Manually extract all quality tags using a robust regex
+        all_tags = re.findall(r'\b(1080p|720p|480p|540p|WEB-DL|WEBRip|BluRay|HDTC|x264|x265|AAC|Dual[\s-]?Audio|HEVC)\b', name, re.IGNORECASE)
+        quality_tags = " | ".join(sorted(list(set(tag.replace(' ', '') for tag in all_tags)), key=lambda x: x.lower()))
+
     except Exception:
         parsed_info = {}
         base_title = name
-        year, is_series, episode_info = None, False, ''
+        year, is_series, episode_info, quality_tags = None, False, '', ''
 
+    # Aggressive cleaning for the batch title
     JUNK_WORDS = [
         'hindi', 'english', 'eng', 'tamil', 'telugu', 'malayalam', 'kannada', 'bengali', 'marathi',
         'gujarati', 'punjabi', 'bhojpuri', 'urdu', 'nepali', 'spanish', 'chinese', 'korean', 'japanese',
         'dual audio', 'multi audio', 'org', 'original', 'hindi dubbed', 'eng sub', 'dub', 'subs', 'tam', 'tel', 'hin',
         'uncut', 'unrated', 'extended', 'remastered', 'final', 'true', 'proper', 'hq', 'br-rip', 'line',
-        'full movie', 'full video', 'watch online', 'download', 'complete', 'combined',
+        'full movie', 'full video', 'watch online', 'download', 'complete', 'combined', 'web series',
         'uplay', 'psa', 'esubs', 'esub', 'msubs',
-        'privatemoviez', 'unratedhd', 'imdbmedia', 'khwaab', 'hdri', 'hdtc', 'webr'
+        'privatemoviez', 'unratedhd', 'imdbmedia', 'khwaab', 'hdri', 'hdtc', 'webr', 'web-dl',
+        's01', 'ep', '2022', 'south', 'cinevood'
     ]
     
     cleaned_title = base_title.lower()
@@ -66,25 +74,21 @@ def clean_and_parse_filename(name: str):
     cleaned_title = re.sub(junk_regex, '', cleaned_title, flags=re.I)
     
     cleaned_title = re.sub(r'[\(\[\{].*?[\)\]\}]|(@|\[@)\S+', '', cleaned_title)
+    cleaned_title = re.sub(r'\d{4}', '', cleaned_title) # Remove years from title
     cleaned_title = re.sub(r'[^a-z0-9\s]', ' ', cleaned_title)
     cleaned_title = ' '.join(cleaned_title.split()).strip()
 
     if len(cleaned_title) < 2:
-        logger.warning(f"Filename '{name}' resulted in a junk title. Skipping.")
-        return None
+        logger.warning(f"Filename '{name}' resulted in a junk title. Using original base title.")
+        cleaned_title = base_title.strip()
 
-    quality_tags_list = [
-        str(parsed_info.get(tag)) for tag in ['resolution', 'quality', 'audio', 'codec']
-        if isinstance(parsed_info.get(tag), (str, int))
-    ]
-    
     media_info = {
         "batch_title": cleaned_title.title(),
         "display_title": base_title.title(),
         "year": year,
         "is_series": is_series,
         "episode_info": episode_info,
-        "quality_tags": " | ".join(quality_tags_list)
+        "quality_tags": quality_tags
     }
     return media_info
 
@@ -108,8 +112,6 @@ async def create_post(client, user_id, messages):
     media_info_list.sort(key=lambda x: natural_sort_key(x.get('episode_info', '')))
 
     first_info = media_info_list[0]
-    # --- THIS IS THE FIX ---
-    # Use the cleaned 'batch_title' for the main post heading
     primary_display_title, year = first_info['batch_title'], first_info['year']
     
     base_caption_header = f"🎬 **{primary_display_title} {f'({year})' if year else ''}**"
@@ -124,17 +126,12 @@ async def create_post(client, user_id, messages):
     
     all_link_entries = []
     for info in media_info_list:
-        if info['is_series']:
-            display_tags = f"{info['episode_info']} | {info['quality_tags']}".strip(" |")
-        else:
-            display_tags = info['quality_tags']
+        display_tags = info['quality_tags']
 
         composite_id = f"{user_id}_{info['file_unique_id']}"
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{composite_id}"
         file_size_str = format_bytes(info['file_size'])
 
-        # --- THIS IS THE FIX ---
-        # Format the file entry with clean quality tags, not inside backticks
         file_entry = f"📁 {display_tags}" if display_tags else "📁"
         file_entry += f"\n    ➤ [Click Here]({link}) ({file_size_str})" if file_size_str else f"\n    ➤ [Click Here]({link})"
         all_link_entries.append(file_entry)
