@@ -17,6 +17,7 @@ from utils.helpers import create_post, get_title_key, notify_and_remove_invalid_
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()])
 logging.getLogger("pyrogram").setLevel(logging.WARNING)
 logging.getLogger("pyromod").setLevel(logging.WARNING)
+logging.getLogger("imdbpy").setLevel(logging.WARNING) # Suppress cinemagoer logs
 logger = logging.getLogger(__name__)
 
 
