@@ -15,7 +15,7 @@ verified_users = db['verified_users']
 async def add_user(user_id):
     """Adds a new user to the database if they don't already exist."""
     user_data = {
-        'user_id': user_id, 'post_channels': [], 'db_channels': [],
+        'user_id': user_id, 'post_channels': [], 'index_db_channel': None,
         'shortener_url': None, 'shortener_api': None, 'fsub_channel': None,
         'filename_url': None, 'footer_buttons': [], 'show_poster': True,
         'shortener_enabled': True, 'how_to_download_link': None,
@@ -50,19 +50,19 @@ async def claim_verification_for_file(owner_id: int, file_unique_id: str, reques
     }
     result = await files.update_one(unclaimed_file_query, {'$set': {'verification_claimed': True}})
     if result.modified_count > 0:
-        # The user who clicks the link (requester_id) gets verified for the file's owner (owner_id)
         await add_user_verification(requester_id, owner_id)
         return True
     return False
 
 async def set_post_channel(user_id: int, channel_id: int):
     """Saves the post channel ID for a specific user."""
-    await users.update_one({'user_id': user_id}, {'$set': {'post_channel': channel_id}}, upsert=True)
+    await users.update_one({'user_id': user_id}, {'$addToSet': {'post_channels': channel_id}})
 
 async def get_post_channel(user_id: int):
     """Retrieves the post channel ID for a specific user."""
     user = await users.find_one({'user_id': user_id})
-    return user.get('post_channel') if user else None
+    # Assuming one post channel for now, can be modified for multiple
+    return user.get('post_channels')[0] if user and user.get('post_channels') else None
 
 async def set_index_db_channel(user_id: int, channel_id: int):
     """Saves the index DB channel ID for a specific user."""
@@ -98,24 +98,24 @@ async def get_user(user_id):
 async def get_all_user_ids(storage_owners_only=False):
     query = {}
     if storage_owners_only:
-        query = {"$or": [{"post_channels": {"$exists": True, "$ne": []}}, {"db_channels": {"$exists": True, "$ne": []}}]}
+        query = {"$or": [{"post_channels": {"$exists": True, "$ne": []}}, {"index_db_channel": {"$exists": True, "$ne": None}}]}
     cursor = users.find(query, {'user_id': 1})
     return [doc['user_id'] for doc in await cursor.to_list(length=None) if 'user_id' in doc]
 
 async def get_storage_owner_ids():
-    query = {"$or": [{"post_channels": {"$exists": True, "$ne": []}}, {"db_channels": {"$exists": True, "$ne": []}}]}
+    query = {"$or": [{"post_channels": {"$exists": True, "$ne": []}}, {"index_db_channel": {"$exists": True, "$ne": None}}]}
     cursor = users.find(query, {'user_id': 1})
     return [doc['user_id'] for doc in await cursor.to_list(length=None) if 'user_id' in doc]
 
 async def get_normal_user_ids():
     all_users_cursor = users.find({}, {'user_id': 1})
-    storage_owners_cursor = users.find({"$or": [{"post_channels": {"$exists": True, "$ne": []}}, {"db_channels": {"$exists": True, "$ne": []}}]}, {'user_id': 1})
+    storage_owners_cursor = users.find({"$or": [{"post_channels": {"$exists": True, "$ne": []}}, {"index_db_channel": {"$exists": True, "$ne": None}}]}, {'user_id': 1})
     all_user_ids = {doc['user_id'] for doc in await all_users_cursor.to_list(length=None) if 'user_id' in doc}
     storage_owner_ids = {doc['user_id'] for doc in await storage_owners_cursor.to_list(length=None) if 'user_id' in doc}
     return list(all_user_ids - storage_owner_ids)
 
 async def get_storage_owners_count():
-    query = {"$or": [{"post_channels": {"$exists": True, "$ne": []}}, {"db_channels": {"$exists": True, "$ne": []}}]}
+    query = {"$or": [{"post_channels": {"$exists": True, "$ne": []}}, {"index_db_channel": {"$exists": True, "$ne": None}}]}
     return await users.count_documents(query)
 
 async def update_user(user_id, key, value):
@@ -127,8 +127,8 @@ async def add_to_list(user_id, list_name, item):
 async def remove_from_list(user_id, list_name, item):
     await users.update_one({'user_id': user_id}, {'$pull': {list_name: item}})
 
-async def find_owner_by_db_channel(channel_id):
-    user = await users.find_one({'db_channels': channel_id})
+async def find_owner_by_index_channel(channel_id):
+    user = await users.find_one({'index_db_channel': channel_id})
     return user['user_id'] if user else None
 
 async def get_file_by_unique_id(owner_id: int, file_unique_id: str):
