@@ -11,7 +11,7 @@ from config import Config
 from database.db import (
     get_user, save_file_data, get_post_channel, get_index_db_channel
 )
-from utils.helpers import create_post, get_title_key, notify_and_remove_invalid_channel, calculate_title_similarity
+from utils.helpers import create_post, get_title_key, notify_and_remove_invalid_channel
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()])
@@ -134,24 +134,21 @@ class Bot(Client):
                 self.open_batches.setdefault(user_id, {})
                 loop = asyncio.get_event_loop()
                 
-                found_batch = False
-                for batch_key, batch_data in self.open_batches[user_id].items():
-                    similarity = calculate_title_similarity(title_key, batch_key)
+                # Use the cleaned title_key directly to find the batch
+                if title_key in self.open_batches[user_id]:
+                    logger.info(f"File '{filename}' matches existing batch '{title_key}'.")
+                    batch_data = self.open_batches[user_id][title_key]
+                    batch_data['messages'].append(copied_message)
                     
-                    if similarity > 95:
-                        logger.info(f"File '{filename}' matches existing batch '{batch_key}' with {similarity}% similarity.")
-                        batch_data['messages'].append(copied_message)
-                        
-                        if batch_data.get('timer'): batch_data['timer'].cancel()
-                        batch_data['timer'] = loop.call_later(5, lambda bk=batch_key: asyncio.create_task(self._finalize_batch(user_id, bk)))
-                        found_batch = True
-                        break
-                
-                if not found_batch:
-                    logger.info(f"No similar batch found. Creating new batch with key: '{title_key}'")
+                    # Reset the timer
+                    if batch_data.get('timer'): batch_data['timer'].cancel()
+                    batch_data['timer'] = loop.call_later(10, lambda bk=title_key: asyncio.create_task(self._finalize_batch(user_id, bk)))
+                else:
+                    logger.info(f"No matching batch found. Creating new batch with key: '{title_key}'")
                     self.open_batches[user_id][title_key] = {
                         'messages': [copied_message],
-                        'timer': loop.call_later(5, lambda key=title_key: asyncio.create_task(self._finalize_batch(user_id, key)))
+                        # Set a timer to finalize the batch after a delay (e.g., 10 seconds)
+                        'timer': loop.call_later(10, lambda key=title_key: asyncio.create_task(self._finalize_batch(user_id, key)))
                     }
 
             except Exception as e:
