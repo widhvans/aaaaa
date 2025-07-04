@@ -1,4 +1,4 @@
-# utils/helpers.py 
+# utils/helpers.py
 
 import re
 import base64
@@ -75,8 +75,9 @@ async def clean_and_parse_filename(name: str):
     """
     A highly robust, multi-stage parsing engine for filenames.
     """
-    # --- Stage 1: Initial Parsing with PTN ---
-    parsed_info = PTN.parse(name)
+    # --- Stage 1: Pre-cleaning and Initial Parsing ---
+    cleaned_name = name.replace('.', ' ').replace('_', ' ')
+    parsed_info = PTN.parse(cleaned_name)
     
     initial_title = parsed_info.get('title')
     year = parsed_info.get('year')
@@ -84,7 +85,7 @@ async def clean_and_parse_filename(name: str):
     
     # Advanced episode parsing to handle single episodes and ranges
     episode_info_str = ""
-    episode_match = re.search(r'[Ee][Pp]?\s?(\d+)(?:\s?-\s?[Ee][Pp]?\s?(\d+))?', name)
+    episode_match = re.search(r'[Ee][Pp]?\s?(\d+)(?:\s?(?:To|-)\s?[Ee][Pp]?\s?(\d+))?', name)
     if episode_match:
         start_ep = int(episode_match.group(1))
         if episode_match.group(2):
@@ -175,7 +176,7 @@ async def create_post(client, user_id, messages):
         if info['quality_tags']:
             display_tags_parts.append(info['quality_tags'])
         
-        display_tags = " | ".join(display_tags_parts)
+        display_tags = " | ".join(filter(None, display_tags_parts))
 
         composite_id = f"{user_id}_{info['file_unique_id']}"
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{composite_id}"
