@@ -65,52 +65,41 @@ class Bot(Client):
                 logger.error(f"An error occurred in send_with_protection: {e}", exc_info=True)
                 return None
 
-    async def find_matching_batch_key(self, user_id, title_key):
-        """
-        Finds the best matching batch key for a given title key.
-        It calculates the similarity with all open batches for the user
-        and returns the key with the highest similarity, if it's above a set threshold.
-        """
-        if user_id not in self.open_batches:
-            return None
-
-        best_match_key = None
-        highest_similarity = 0
-        # A threshold to prevent completely unrelated files from batching.
-        MATCH_THRESHOLD = 88 
-
-        for existing_key in self.open_batches[user_id]:
-            similarity = fuzz.token_sort_ratio(title_key.lower(), existing_key.lower())
-            if similarity > highest_similarity:
-                highest_similarity = similarity
-                best_match_key = existing_key
-
-        if highest_similarity >= MATCH_THRESHOLD:
-            logger.info(f"Found best match for '{title_key}' -> '{best_match_key}' with similarity {highest_similarity}%.")
-            return best_match_key
-        
-        logger.info(f"No suitable batch found for '{title_key}'. Highest similarity was {highest_similarity}% with '{best_match_key}', which is below the threshold of {MATCH_THRESHOLD}%.")
-        return None
-
-    async def _finalize_batch(self, user_id, batch_key):
-        if user_id not in self.open_batches or batch_key not in self.open_batches[user_id]:
+    async def _finalize_collection(self, user_id):
+        if user_id not in self.open_batches or not self.open_batches[user_id]:
             return
-        
-        batch_data = self.open_batches[user_id].pop(batch_key)
-        messages = batch_data.get('messages', [])
-        dashboard_msg = batch_data.get('dashboard_message')
+
+        collection_data = self.open_batches.pop(user_id)
+        messages = collection_data.get('messages', [])
+        dashboard_msg = collection_data.get('dashboard_message')
 
         try:
             if not messages:
                 if dashboard_msg: await self.send_with_protection(dashboard_msg.delete)
                 return
 
-            if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, f"**Processing Batch**\n\n🎬 **Batch:** `{batch_key}`\n"
-                                                          f"⏳ **Status:** Processing `{len(messages)}` files...")
+            logical_batches = {}
+            if dashboard_msg:
+                await self.send_with_protection(dashboard_msg.edit_text, f"⏳ Grouping `{len(messages)}` collected files into logical batches...")
+
+            for msg in messages:
+                filename = getattr(msg, msg.media.value).file_name
+                batch_title = await get_title_key(filename)
+                if not batch_title:
+                    batch_title = "Uncategorized"
+                
+                if batch_title not in logical_batches:
+                    logical_batches[batch_title] = []
+                logical_batches[batch_title].append(msg)
+
+            total_batches = len(logical_batches)
+            if dashboard_msg:
+                await self.send_with_protection(dashboard_msg.edit_text, f"✅ Found `{total_batches}` unique batch(es). Starting to process and post...")
+            await asyncio.sleep(2)
 
             user = await get_user(user_id)
             if not user: return
-
+            
             post_channel_id = await get_post_channel(user_id)
             if not post_channel_id:
                 if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, "❌ **Error!**\n\nNo Post Channel is configured. Cannot create post.")
@@ -120,28 +109,33 @@ class Bot(Client):
                  if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, "❌ **Error!**\n\nCould not access the configured Post Channel.")
                  return
 
-            posts_to_send = await create_post(self, user_id, messages)
-            
-            if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, f"**Posting Batch**\n\n🎬 **Batch:** `{batch_key}`\n"
-                                                          f"⏳ **Status:** Posting `{len(posts_to_send)}` message(s) to your channel...")
+            processed_count = 0
+            for batch_title, batch_messages in logical_batches.items():
+                processed_count += 1
+                if dashboard_msg:
+                    await self.send_with_protection(dashboard_msg.edit_text,
+                                                  f"**Processing Batch {processed_count}/{total_batches}**\n\n"
+                                                  f"🎬 **Batch:** `{batch_title}`\n"
+                                                  f"⏳ **Status:** Creating post for `{len(batch_messages)}` file(s)...")
 
-            for channel_id in [post_channel_id]:
+                posts_to_send = await create_post(self, user_id, batch_messages)
+                
                 for post in posts_to_send:
                     poster, caption, footer = post
                     if poster:
-                        await self.send_with_protection(self.send_photo, channel_id, photo=poster, caption=caption, reply_markup=footer)
+                        await self.send_with_protection(self.send_photo, post_channel_id, photo=poster, caption=caption, reply_markup=footer)
                     else:
-                        await self.send_with_protection(self.send_message, channel_id, caption, reply_markup=footer, disable_web_page_preview=True)
-                    await asyncio.sleep(2) 
+                        await self.send_with_protection(self.send_message, post_channel_id, caption, reply_markup=footer, disable_web_page_preview=True)
+                    await asyncio.sleep(2)
 
-            if dashboard_msg: 
-                await self.send_with_protection(dashboard_msg.edit_text, f"✅ **Batch Complete!**\n\n`{batch_key}` with `{len(messages)}` files posted successfully.")
-                await asyncio.sleep(10) # Keep the completion message for 10 seconds
+            if dashboard_msg:
+                await self.send_with_protection(dashboard_msg.edit_text, f"✅ **All Done!**\n\nSuccessfully processed and posted all `{total_batches}` batches.")
+                await asyncio.sleep(10)
                 await self.send_with_protection(dashboard_msg.delete)
 
         except Exception as e:
-            logger.exception(f"CRITICAL Error finalizing batch {batch_key} for user {user_id}: {e}")
-            if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, f"❌ **Error!**\n\nAn unexpected error occurred while processing batch `{batch_key}`.")
+            logger.exception(f"CRITICAL Error finalizing collection for user {user_id}: {e}")
+            if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, f"❌ **Error!**\n\nAn unexpected error occurred while processing your files.")
         finally:
             if user_id in self.open_batches and not self.open_batches[user_id]:
                 del self.open_batches[user_id]
@@ -160,51 +154,40 @@ class Bot(Client):
 
                 await save_file_data(user_id, message, copied_message, copied_message)
                 
-                filename = getattr(copied_message, copied_message.media.value).file_name
-                title_key = await get_title_key(filename)
-                if not title_key: continue
-
-                self.open_batches.setdefault(user_id, {})
                 loop = asyncio.get_event_loop()
 
-                matched_key = await self.find_matching_batch_key(user_id, title_key)
-
-                batch_key_to_use = matched_key if matched_key else title_key
-
-                if batch_key_to_use in self.open_batches[user_id]:
-                    batch_data = self.open_batches[user_id][batch_key_to_use]
-                    if batch_data.get('timer'): batch_data['timer'].cancel()
+                if user_id not in self.open_batches:
+                    dashboard_msg = await self.send_with_protection(
+                        self.send_message,
+                        chat_id=user_id,
+                        text=f"**File Detected**\n\n"
+                             f"📊 **Files Collected:** `1`\n"
+                             f"⏳ **Status:** Started a 10-second window to collect more files..."
+                    )
+                    self.open_batches[user_id] = {
+                        'messages': [copied_message],
+                        'timer': loop.call_later(10, lambda u=user_id: asyncio.create_task(self._finalize_collection(u))),
+                        'dashboard_message': dashboard_msg
+                    }
+                else:
+                    collection_data = self.open_batches[user_id]
+                    if collection_data.get('timer'): collection_data['timer'].cancel()
                     
-                    batch_data['messages'].append(copied_message)
+                    collection_data['messages'].append(copied_message)
                     
-                    dashboard_msg = batch_data.get('dashboard_message')
+                    dashboard_msg = collection_data.get('dashboard_message')
                     if dashboard_msg:
                         try:
                            await self.send_with_protection(
                                dashboard_msg.edit_text,
-                               f"**Batch Update**\n\n"
-                               f"🎬 **Batch:** `{batch_key_to_use}`\n"
-                               f"📊 **Files Collected:** `{len(batch_data['messages'])}`\n"
-                               f"⏳ **Status:** Added new file. Waiting 10 more seconds for other files..."
+                               f"**File Detected**\n\n"
+                               f"📊 **Files Collected:** `{len(collection_data['messages'])}`\n"
+                               f"⏳ **Status:** Resetting 10-second window to collect more files..."
                            )
                         except MessageNotModified: pass
                     
-                    batch_data['timer'] = loop.call_later(10, lambda u=user_id, k=batch_key_to_use: asyncio.create_task(self._finalize_batch(u, k)))
-                else:
-                    dashboard_msg = await self.send_with_protection(
-                        self.send_message,
-                        chat_id=user_id,
-                        text=f"**New Batch Detected**\n\n"
-                             f"🎬 **Batch:** `{batch_key_to_use}`\n"
-                             f"📊 **Files Collected:** `1`\n"
-                             f"⏳ **Status:** Collecting more files. Waiting for 10 seconds..."
-                    )
-                    
-                    self.open_batches[user_id][batch_key_to_use] = {
-                        'messages': [copied_message],
-                        'timer': loop.call_later(10, lambda u=user_id, k=batch_key_to_use: asyncio.create_task(self._finalize_batch(u, k))),
-                        'dashboard_message': dashboard_msg
-                    }
+                    collection_data['timer'] = loop.call_later(10, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
+
             except Exception as e:
                 logger.exception(f"CRITICAL Error in file_processor_worker's main loop: {e}")
             finally:
