@@ -1,4 +1,4 @@
-# helpers.py
+# utils/helpers.py
 
 import re
 import base64
@@ -7,7 +7,7 @@ import PTN
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import UserNotParticipant, ChatAdminRequired, ChannelInvalid, PeerIdInvalid, ChannelPrivate
 from config import Config
-from database.db import get_user, remove_from_list
+from database.db import get_user, remove_from_list, update_user
 from features.poster import get_poster
 from thefuzz import fuzz
 
@@ -108,7 +108,9 @@ async def create_post(client, user_id, messages):
     media_info_list.sort(key=lambda x: natural_sort_key(x.get('episode_info', '')))
 
     first_info = media_info_list[0]
-    primary_display_title, year = first_info['display_title'], first_info['year']
+    # --- THIS IS THE FIX ---
+    # Use the cleaned 'batch_title' for the main post heading
+    primary_display_title, year = first_info['batch_title'], first_info['year']
     
     base_caption_header = f"🎬 **{primary_display_title} {f'({year})' if year else ''}**"
     post_poster = await get_poster(primary_display_title, year) if user.get('show_poster', True) else None
@@ -131,7 +133,9 @@ async def create_post(client, user_id, messages):
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{composite_id}"
         file_size_str = format_bytes(info['file_size'])
 
-        file_entry = f"📁 `{display_tags}`" if display_tags else "📁"
+        # --- THIS IS THE FIX ---
+        # Format the file entry with clean quality tags, not inside backticks
+        file_entry = f"📁 {display_tags}" if display_tags else "📁"
         file_entry += f"\n    ➤ [Click Here]({link}) ({file_size_str})" if file_size_str else f"\n    ➤ [Click Here]({link})"
         all_link_entries.append(file_entry)
 
@@ -201,12 +205,14 @@ async def get_main_menu(user_id):
     ]
     
     if user_id == Config.ADMIN_ID:
-        # Admin-specific buttons are now removed from here
         pass
         
     return menu_text, InlineKeyboardMarkup(buttons)
 
 async def notify_and_remove_invalid_channel(client, user_id, channel_id, channel_type):
+    user_settings = await get_user(user_id)
+    if not user_settings: return False
+    
     db_key = f"{channel_type.lower()}_channels"
     if channel_type.lower() == 'index db':
         db_key = 'index_db_channel'
