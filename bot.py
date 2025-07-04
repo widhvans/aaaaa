@@ -44,7 +44,7 @@ class Bot(Client):
         self.web_runner = None
         
         self.owner_db_channel = Config.OWNER_DB_CHANNEL
-        self.stream_channel_id = None # Will be set for users
+        self.stream_channel_id = None
         self.file_queue = asyncio.Queue()
         self.open_batches = {}
         self.search_cache = {}
@@ -108,7 +108,6 @@ class Bot(Client):
             try:
                 message, user_id = await self.file_queue.get()
                 
-                # Use the user's index channel for streaming, fallback to owner log channel
                 self.stream_channel_id = await get_index_db_channel(user_id) or self.owner_db_channel
                 
                 if not self.stream_channel_id:
@@ -120,7 +119,6 @@ class Bot(Client):
                     logger.error(f"Failed to copy message to owner_db_channel for user {user_id}. Skipping file.")
                     continue
 
-                # The stream message is now the same as the copied message in the log channel
                 stream_message = copied_message
 
                 await save_file_data(user_id, message, copied_message, stream_message)
@@ -179,15 +177,12 @@ class Bot(Client):
         
         if self.owner_db_channel:
             try:
-                # This line "introduces" the bot to the channel, fixing the PeerIdInvalid error
                 await self.get_chat(self.owner_db_channel)
                 logger.info(f"Successfully connected to Owner DB (Log Channel) [{self.owner_db_channel}]")
             except PeerIdInvalid:
-                logger.critical(f"FATAL: Peer ID for Owner DB Channel ({self.owner_db_channel}) is invalid. Please check your config.")
-                return
+                logger.warning(f"Bot is not in the Owner DB Channel ({self.owner_db_channel}). Session may need to update. Bot will continue starting.")
             except Exception as e:
-                logger.critical(f"FATAL: Could not connect to Owner DB Channel. Ensure the bot is an admin. Error: {e}")
-                return
+                logger.error(f"Could not verify Owner DB Channel. Ensure the bot is an admin. Error: {e}")
         else: 
             logger.warning("Owner DB ID (Log Channel) not set in config.py.")
             
