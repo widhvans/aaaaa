@@ -75,55 +75,67 @@ async def clean_and_parse_filename(name: str):
     """
     A highly robust, multi-stage parsing engine for filenames.
     """
-    # --- Stage 1: Pre-cleaning and Initial Parsing ---
-    cleaned_name = name.replace('.', ' ').replace('_', ' ')
-    parsed_info = PTN.parse(cleaned_name)
+    # --- Stage 1: Pre-cleaning ---
+    # Aggressively remove usernames, channel names, and other junk before parsing
+    cleaned_name = re.sub(r'(@|\[@)\S+', '', name) # Remove @username or [@username]
+    # Remove bracketed content that is often a channel/user tag
+    cleaned_name = re.sub(r'\[\s*\w+\s*\]', '', cleaned_name) 
     
-    initial_title = parsed_info.get('title')
+    parsed_info = PTN.parse(cleaned_name.replace('.', ' ').replace('_', ' '))
+    
+    initial_title = parsed_info.get('title', '').strip()
     year = parsed_info.get('year')
     season = parsed_info.get('season')
     
-    # Advanced episode parsing to handle single episodes and ranges
+    # --- Stage 2: Advanced Episode & Year Parsing ---
     episode_info_str = ""
-    # Regex to capture various episode range formats (e.g., E01-E05, E01 To 05, Ep 01-05)
+    # Use a cleaned version of the name for robust episode detection
+    search_name = name.replace('.', ' ').replace('_', ' ')
     episode_match = re.search(
         r'[Ee](?:p(?:isode)?)?\.?\s*(\d+)(?:\s*(?:-|to)\s*[Ee]?(?:p(?:isode)?)?\.?\s*(\d+))?',
-        cleaned_name,
+        search_name,
         re.IGNORECASE
     )
 
     if episode_match:
         start_ep = int(episode_match.group(1))
-        if episode_match.group(2):
-            end_ep = int(episode_match.group(2))
-            episode_info_str = f"E{start_ep:02d}-E{end_ep:02d}"
+        # Prevent misinterpreting a year (like 2025) as an episode number
+        if 1900 < start_ep < 2100 and not season:
+             if not year: year = start_ep
         else:
-            episode_info_str = f"E{start_ep:02d}"
+            if episode_match.group(2):
+                end_ep = int(episode_match.group(2))
+                episode_info_str = f"E{start_ep:02d}-E{end_ep:02d}"
+            else:
+                episode_info_str = f"E{start_ep:02d}"
+    # Fallback to PTN's episode parsing if our custom regex fails
     elif parsed_info.get('episode'):
-        # Fallback to PTN's episode parsing if our regex fails
         episode = parsed_info.get('episode')
         if isinstance(episode, list):
             episode_info_str = f"E{min(episode):02d}-E{max(episode):02d}"
-        else:
+        # Again, check if it's a year and not a real episode number
+        elif not (1900 < episode < 2100 and not season):
             episode_info_str = f"E{episode:02d}"
 
     is_series = season is not None or episode_info_str != ""
 
-    # --- Stage 2: IMDb Verification for Definitive Title ---
+    # --- Stage 3: IMDb Verification for Definitive Title ---
     definitive_title, definitive_year = await get_definitive_title_from_imdb(initial_title)
 
-    # --- Stage 3: Assemble Final, Clean Data ---
-    if definitive_title:
-        final_title = definitive_title
-        final_year = definitive_year
-    else:
-        final_title = initial_title
-        final_year = year
-        
+    # --- Stage 4: Assemble Final, Clean Data ---
+    final_title = definitive_title if definitive_title else initial_title
+    final_year = definitive_year if definitive_year else year
+    
+    # This is the key for batching. It's clean and consistent.
     batch_title = f"{final_title}"
     if is_series and season:
         batch_title += f" S{season:02d}"
 
+    # This is the title for display in the post header.
+    display_title = f"{final_title}"
+    if final_year:
+        display_title += f" ({final_year})"
+        
     # Re-assemble quality tags from the original filename for the post body
     quality_tags_parts = []
     if parsed_info.get('resolution'): quality_tags_parts.append(parsed_info.get('resolution'))
@@ -133,6 +145,7 @@ async def clean_and_parse_filename(name: str):
         
     media_info = {
         "batch_title": batch_title.strip(),
+        "display_title": display_title.strip(), # This will be used for the post header
         "year": final_year,
         "is_series": is_series,
         "season_info": f"S{season:02d}" if season else "",
@@ -162,9 +175,12 @@ async def create_post(client, user_id, messages):
     media_info_list.sort(key=lambda x: natural_sort_key(x.get('episode_info', '')))
 
     first_info = media_info_list[0]
-    primary_display_title, year = first_info['batch_title'], first_info['year']
+    # Use the new 'display_title' for a clean header
+    primary_display_title = first_info['display_title']
+    year = first_info['year']
     
-    base_caption_header = f"🎬 **{primary_display_title} {f'({year})' if year else ''}**"
+    # The header will now use the clean display title from clean_and_parse_filename
+    base_caption_header = f"🎬 **{primary_display_title}**"
     post_poster = await get_poster(first_info['batch_title'], year) if user.get('show_poster', True) else None
     
     footer_buttons = user.get('footer_buttons', [])
@@ -214,8 +230,8 @@ async def create_post(client, user_id, messages):
     total_posts = len(final_posts)
     if total_posts > 1:
         for i, (poster, cap, foot) in enumerate(final_posts):
-            new_header = f"{base_caption_header} (Part {i+1}/{total_posts})"
-            final_posts[i] = (poster, cap.replace(base_caption_header, new_header), foot)
+            new_header = f"{primary_display_title} (Part {i+1}/{total_posts})"
+            final_posts[i] = (poster, cap.replace(primary_display_title, new_header), foot)
     elif total_posts == 1 and final_posts:
         _, cap, foot = final_posts[0]
         final_posts[0] = (post_poster, cap, foot)
@@ -234,7 +250,7 @@ def go_back_button(user_id):
     return InlineKeyboardMarkup([[InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")]])
 
 async def get_file_raw_link(message):
-    return f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.id}"
+    return f"https.t.me/c/{str(message.chat.id).replace('-100', '')}/{message.id}"
 
 def natural_sort_key(s):
     if not isinstance(s, str):
