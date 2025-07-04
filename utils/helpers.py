@@ -63,10 +63,9 @@ def clean_and_parse_filename(name: str):
         'gujarati', 'punjabi', 'bhojpuri', 'urdu', 'nepali', 'spanish', 'chinese', 'korean', 'japanese',
         'dual audio', 'multi audio', 'org', 'original', 'hindi dubbed', 'eng sub', 'dub', 'subs', 'tam', 'tel', 'hin',
         'uncut', 'unrated', 'extended', 'remastered', 'final', 'true', 'proper', 'hq', 'br-rip', 'line',
-        'full movie', 'full video', 'watch online', 'download', 'complete', 'combined', 'web series',
-        'uplay', 'psa', 'esubs', 'esub', 'msubs',
-        'privatemoviez', 'unratedhd', 'imdbmedia', 'khwaab', 'hdri', 'hdtc', 'webr', 'web-dl',
-        's01', 'ep', '2022', 'south', 'cinevood'
+        'full movie', 'full video', 'watch online', 'download', 'complete', 'combined', 'web series', 'completed',
+        'uplay', 'psa', 'esubs', 'esub', 'msubs', 'hevc', 'ep', 's0', 'cinevood',
+        'privatemoviez', 'unratedhd', 'imdbmedia', 'khwaab', 'hdri', 'hdtc', 'webr', 'web-dl'
     ]
     
     cleaned_title = base_title.lower()
@@ -75,7 +74,8 @@ def clean_and_parse_filename(name: str):
     
     cleaned_title = re.sub(r'[\(\[\{].*?[\)\]\}]|(@|\[@)\S+', '', cleaned_title)
     cleaned_title = re.sub(r'\d{4}', '', cleaned_title) # Remove years from title
-    cleaned_title = re.sub(r'[^a-z0-9\s]', ' ', cleaned_title)
+    cleaned_title = re.sub(r'\d', '', cleaned_title) # Remove all numbers
+    cleaned_title = re.sub(r'[^a-z\s]', '', cleaned_title) # Remove non-alphabetic characters
     cleaned_title = ' '.join(cleaned_title.split()).strip()
 
     if len(cleaned_title) < 2:
