@@ -135,15 +135,27 @@ class Bot(Client):
                 self.open_batches.setdefault(user_id, {})
                 loop = asyncio.get_event_loop()
                 
-                # Fuzzy matching to find a similar batch
+                # More aggressive fuzzy matching to find a similar batch
                 matched_batch_key = None
-                highest_similarity = 75  # Set a minimum threshold for matching
+                highest_similarity = 85  # Start with a high threshold for quality matches
+                
                 for existing_key in self.open_batches.get(user_id, {}):
-                    similarity = fuzz.ratio(title_key, existing_key)
+                    # This ratio is great for comparing titles with different word orders or junk
+                    similarity = fuzz.token_sort_ratio(title_key, existing_key)
                     if similarity > highest_similarity:
                         highest_similarity = similarity
                         matched_batch_key = existing_key
                 
+                # If no strong match is found, try a more lenient partial match
+                if not matched_batch_key and len(self.open_batches.get(user_id, {}).keys()) > 0:
+                     for existing_key in self.open_batches.get(user_id, {}):
+                        similarity = fuzz.partial_ratio(title_key, existing_key)
+                        if similarity > 90: # Needs to be a very high partial match
+                            matched_batch_key = existing_key
+                            highest_similarity = similarity
+                            logger.info("Found a batch match using lenient partial ratio.")
+                            break
+
                 if matched_batch_key:
                     logger.info(f"File '{filename}' matches existing batch '{matched_batch_key}' with similarity {highest_similarity}%.")
                     batch_data = self.open_batches[user_id][matched_batch_key]
