@@ -33,61 +33,77 @@ def format_bytes(size):
 def clean_and_parse_filename(name: str):
     """
     The definitive, final, intelligent parsing engine.
-    It uses a two-stage process (PTN then Regex) to extract structured info,
-    differentiating between movies and series for perfect formatting.
+    This version uses a multi-stage regex process to perfectly differentiate
+    titles, seasons, episodes, and every quality tag.
     """
     original_name = name.replace('.', ' ').replace('_', ' ')
+
+    # --- Stage 1: Extract and Remove Core Information ---
     
-    # --- New, more robust parsing logic ---
+    # Extract Year
+    year_match = re.search(r'[\(\[]?(\d{4})[\)\]]?', original_name)
+    year = year_match.group(1) if year_match else None
     
-    # 1. Reliably detect if it's a series and extract Season/Episode
+    # Extract Season and Episode with high precision
     is_series = False
     season_str = ""
     episode_str = ""
     series_match = re.search(r'[Ss]([0-9]+)[\s.]?[Ee]([0-9]+(?:[\s.-]?[Ee]?[0-9]+)?)?', original_name)
+    if not series_match:
+        series_match = re.search(r'Season[\s-]?(\d+)', original_name, re.IGNORECASE)
+    
     if series_match:
         is_series = True
         season_num = int(series_match.group(1))
         season_str = f"S{str(season_num).zfill(2)}"
         
-        # Handle episode ranges like E01-06
-        episode_part = series_match.group(2) if series_match.group(2) else ""
-        episode_nums = re.findall(r'[0-9]+', episode_part)
-        if len(episode_nums) > 1:
-            episode_str = f"E{episode_nums[0].zfill(2)}-E{episode_nums[-1].zfill(2)}"
-        elif len(episode_nums) == 1:
-            episode_str = f"E{episode_nums[0].zfill(2)}"
+        # Handle complex episode ranges like E01-06
+        episode_part_match = re.search(r'[Ee][Pp]?\.?([\d-]+)', original_name, re.IGNORECASE)
+        if episode_part_match:
+            episode_part = episode_part_match.group(1)
+            episode_nums = re.findall(r'\d+', episode_part)
+            if len(episode_nums) > 1:
+                episode_str = f"E{episode_nums[0].zfill(2)}-E{episode_nums[-1].zfill(2)}"
+            elif len(episode_nums) == 1:
+                episode_str = f"E{episode_nums[0].zfill(2)}"
 
-    # 2. Extract all possible quality tags
+    # Extract ALL quality tags, languages, and other specs
     tags_to_find = [
-        '1080p', '720p', '480p', '540p', 'WEB-DL', 'WEBRip', 'BluRay', 'HDTC', 
-        'x264', 'x265', 'AAC', 'Dual Audio', 'Hindi', 'English', 'ESub', 'HEVC'
+        '1080p', '720p', '480p', '540p', 'WEB-DL', 'WEBRip', 'BluRay', 'HDTC', 'x264', 
+        'x265', 'AAC', 'Dual Audio', 'Hindi', 'English', 'ESub', 'HEVC', 'Dua'
     ]
-    all_tags_regex = r'\b(' + '|'.join(tags_to_find) + r')\b'
+    all_tags_regex = r'\b(' + '|'.join(re.escape(tag) for tag in tags_to_find) + r')\b'
     found_tags = re.findall(all_tags_regex, original_name, re.IGNORECASE)
-    quality_tags = " | ".join(sorted(list(set(tag.strip() for tag in found_tags)), key=lambda x: x.lower()))
+    quality_tags = " | ".join(sorted(list(set(tag.strip().replace("Dua", "Dual Audio") for tag in found_tags)), key=lambda x: x.lower()))
 
-    # 3. Get a clean title
-    # Start with the full name and carve away the junk
-    cleaned_title = original_name
+    # --- Stage 2: Clean the Title ---
     
-    # Remove all found tags
-    cleaned_title = re.sub(all_tags_regex, '', cleaned_title, flags=re.IGNORECASE)
+    # Start with what PTN thinks is the title
+    ptn_info = PTN.parse(original_name)
+    cleaned_title = ptn_info.get('title', original_name)
+
+    # Be much more aggressive with cleaning
+    # Remove everything that we've already extracted
+    if year: cleaned_title = re.sub(r'(\d{4})', '', cleaned_title)
+    if is_series:
+        cleaned_title = re.sub(r'[Ss]([0-9]+)[\s.]?[Ee]([0-9]+(?:[\s.-]?[Ee]?[0-9]+)?)?', '', cleaned_title, flags=re.IGNORECASE)
+        cleaned_title = re.sub(r'Season[\s-]?(\d+)', '', cleaned_title, flags=re.IGNORECASE)
     
-    # Remove season/episode patterns
-    cleaned_title = re.sub(r'[Ss][0-9]+[\s.]?[Ee][0-9]+(?:[\s.-]?[Ee]?[0-9]+)?', '', cleaned_title)
+    # Remove all extracted tags from the title string
+    for tag in found_tags:
+        cleaned_title = re.sub(r'\b' + re.escape(tag) + r'\b', '', cleaned_title, flags=re.IGNORECASE)
+    
+    # Remove remaining junk words
+    JUNK_WORDS = ['completed', 'web series', 'mkv']
+    junk_regex = r'\b(' + '|'.join(re.escape(word) for word in JUNK_WORDS) + r')\b'
+    cleaned_title = re.sub(junk_regex, '', cleaned_title, flags=re.I)
 
-    # Remove year in brackets/parentheses
-    year_match = re.search(r'[\(\[]?(\d{4})[\)\]]?', cleaned_title)
-    year = year_match.group(1) if year_match else None
-    if year:
-        cleaned_title = cleaned_title.replace(year_match.group(0), '')
+    # Final cleanup of symbols and extra spaces
+    cleaned_title = re.sub(r'[\(\)\[\]\{\}]', '', cleaned_title)
+    cleaned_title = ' '.join(cleaned_title.split()).strip()
 
-    # Remove other junk
-    cleaned_title = re.sub(r'[\(\[\{].*?[\)\]\}]|(@|\[@)\S+', '', cleaned_title)
-    cleaned_title = ' '.join(cleaned_title.split()).strip() # Consolidate spaces
-
-    # Create the final batch title
+    # --- Stage 3: Assemble Final Data ---
+    
     batch_title = f"{cleaned_title} {season_str}".strip() if is_series else cleaned_title
 
     media_info = {
@@ -99,7 +115,6 @@ def clean_and_parse_filename(name: str):
         "quality_tags": quality_tags
     }
     return media_info
-    # --- End of new parsing logic ---
 
 async def create_post(client, user_id, messages):
     user = await get_user(user_id)
@@ -135,7 +150,6 @@ async def create_post(client, user_id, messages):
     
     all_link_entries = []
     for info in media_info_list:
-        # Combine episode info and quality tags for the caption
         display_tags_parts = []
         if info['is_series'] and info['episode_info']:
             display_tags_parts.append(info['episode_info'])
