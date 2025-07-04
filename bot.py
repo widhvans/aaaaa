@@ -77,11 +77,11 @@ class Bot(Client):
             chat_id=user_id,
             text=f"**File(s) Detected**\n\n"
                  f"📊 **Files Collected:** `{len(initial_messages)}`\n"
-                 f"⏳ **Status:** Started a 30-second window to collect more files..."
+                 f"⏳ **Status:** Started a 50-second window to collect more files..."
         )
         self.open_batches[user_id] = {
             'messages': initial_messages,
-            'timer': loop.call_later(30, lambda u=user_id: asyncio.create_task(self._finalize_collection(u))),
+            'timer': loop.call_later(50, lambda u=user_id: asyncio.create_task(self._finalize_collection(u))),
             'dashboard_message': dashboard_msg
         }
 
@@ -200,11 +200,11 @@ class Bot(Client):
                                dashboard_msg.edit_text,
                                f"**File Detected**\n\n"
                                f"📊 **Files Collected:** `{len(collection_data['messages'])}`\n"
-                               f"⏳ **Status:** Resetting 30-second window to collect more files..."
+                               f"⏳ **Status:** Resetting 50-second window to collect more files..."
                            )
                         except MessageNotModified: pass
                     
-                    collection_data['timer'] = loop.call_later(30, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
+                    collection_data['timer'] = loop.call_later(50, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
 
             except Exception as e:
                 logger.exception(f"CRITICAL Error in file_processor_worker's main loop: {e}")
