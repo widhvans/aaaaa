@@ -12,7 +12,7 @@ from config import Config
 from database.db import (
     get_user, save_file_data, get_post_channel, get_index_db_channel
 )
-from utils.helpers import create_post, get_title_key, notify_and_remove_invalid_channel
+from utils.helpers import create_post, get_batch_key_from_filename, notify_and_remove_invalid_channel
 from thefuzz import fuzz
 
 # Setup logging
@@ -52,10 +52,10 @@ class Bot(Client):
         self.open_batches = {}
         self.search_cache = {}
 
-        # For the new time-based collection model
         self.processing_users = set()
         self.waiting_files = {}
         self.last_dashboard_edit_time = {}
+        self.imdb_cache = {}
         
         self.vps_ip = Config.VPS_IP
         self.vps_port = Config.VPS_PORT
@@ -90,6 +90,7 @@ class Bot(Client):
 
     async def _finalize_collection(self, user_id):
         self.processing_users.add(user_id)
+        self.imdb_cache.clear()
         try:
             if user_id not in self.open_batches or not self.open_batches[user_id]:
                 return
@@ -102,48 +103,46 @@ class Bot(Client):
                 if dashboard_msg: await self.send_with_protection(dashboard_msg.delete)
                 return
 
+            # Milestone 1: Fast grouping using new keyword logic
             logical_batches = {}
             if dashboard_msg:
-                await self.send_with_protection(dashboard_msg.edit_text, f"⏳ Grouping `{len(messages)}` collected files into logical batches...")
+                await self.send_with_protection(dashboard_msg.edit_text, f"⏳ **Step 1/2:** Analyzing and grouping `{len(messages)}` files...")
 
             for msg in messages:
                 filename = getattr(msg, msg.media.value).file_name
-                batch_title = await get_title_key(filename)
-                if not batch_title:
-                    batch_title = "Uncategorized"
-                
-                if batch_title not in logical_batches:
-                    logical_batches[batch_title] = []
-                logical_batches[batch_title].append(msg)
+                batch_key = get_batch_key_from_filename(filename) 
+                if batch_key not in logical_batches:
+                    logical_batches[batch_key] = []
+                logical_batches[batch_key].append(msg)
 
+            # Milestone 2: Processing with ETA
             total_batches = len(logical_batches)
+            estimated_time = total_batches * 8 
             if dashboard_msg:
-                await self.send_with_protection(dashboard_msg.edit_text, f"✅ Found `{total_batches}` unique batch(es). Starting to process and post...")
-            await asyncio.sleep(2)
-
+                await self.send_with_protection(dashboard_msg.edit_text, f"✅ **Step 1/2 Complete.** Found `{total_batches}` batches.\n\n"
+                                                                      f"⏳ **Step 2/2:** Processing... (Est. Time: ~{estimated_time} seconds)")
             user = await get_user(user_id)
             if not user: return
             
             post_channel_id = await get_post_channel(user_id)
-            if not post_channel_id:
-                if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, "❌ **Error!**\n\nNo Post Channel is configured. Cannot create post.")
+            if not post_channel_id or not await notify_and_remove_invalid_channel(self, user_id, post_channel_id, "Post"):
+                if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, "❌ **Error!**\n\nCould not access a valid Post Channel.")
                 return
 
-            if not await notify_and_remove_invalid_channel(self, user_id, post_channel_id, "Post"):
-                 if dashboard_msg: await self.send_with_protection(dashboard_msg.edit_text, "❌ **Error!**\n\nCould not access the configured Post Channel.")
-                 return
-
             processed_count = 0
-            for batch_title, batch_messages in logical_batches.items():
+            for _, batch_messages in logical_batches.items():
                 processed_count += 1
-                if dashboard_msg:
-                    await self.send_with_protection(dashboard_msg.edit_text,
-                                                  f"**Processing Batch {processed_count}/{total_batches}**\n\n"
-                                                  f"🎬 **Batch:** `{batch_title}`\n"
-                                                  f"⏳ **Status:** Creating post for `{len(batch_messages)}` file(s)...")
-
-                posts_to_send = await create_post(self, user_id, batch_messages)
                 
+                # The slow step, now optimized with caching
+                posts_to_send = await create_post(self, user_id, batch_messages, self.imdb_cache)
+                
+                if dashboard_msg:
+                    remaining_eta = (total_batches - processed_count) * 8
+                    await self.send_with_protection(dashboard_msg.edit_text, f"**Processing...**\n\n"
+                                                                          f"✅ Batch {processed_count-1}/{total_batches} posted.\n"
+                                                                          f"⏳ Posting batch {processed_count}/{total_batches}...\n"
+                                                                          f"(Est. remaining: ~{remaining_eta} seconds)")
+
                 for post in posts_to_send:
                     poster, caption, footer = post
                     if poster:
@@ -164,7 +163,6 @@ class Bot(Client):
             self.processing_users.discard(user_id)
             self.last_dashboard_edit_time.pop(user_id, None)
             if user_id in self.waiting_files and self.waiting_files[user_id]:
-                logger.info(f"Starting new collection for user {user_id} with {len(self.waiting_files[user_id])} waiting files.")
                 waiting_messages = self.waiting_files.pop(user_id)
                 await self._start_new_collection(user_id, waiting_messages)
 
@@ -185,7 +183,6 @@ class Bot(Client):
                 
                 if user_id in self.processing_users:
                     self.waiting_files.setdefault(user_id, []).append(copied_message)
-                    logger.info(f"User {user_id} is processing. Added file to waiting list (total waiting: {len(self.waiting_files[user_id])}).")
                     continue
                 
                 loop = asyncio.get_event_loop()
@@ -198,11 +195,9 @@ class Bot(Client):
                     
                     collection_data['messages'].append(copied_message)
                     
-                    dashboard_msg = collection_data.get('dashboard_message')
-                    
-                    # Throttle dashboard edits to prevent FloodWait
                     last_edit = self.last_dashboard_edit_time.get(user_id, 0)
                     if (time.time() - last_edit) > DASHBOARD_EDIT_THROTTLE_SECONDS:
+                        dashboard_msg = collection_data.get('dashboard_message')
                         if dashboard_msg:
                             try:
                                await self.send_with_protection(
