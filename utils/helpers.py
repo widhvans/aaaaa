@@ -38,69 +38,58 @@ def clean_and_parse_filename(name: str):
     """
     original_name = name.replace('.', ' ').replace('_', ' ')
 
-    # --- Stage 1: Extract and Remove Core Information ---
+    # --- Stage 1: High-Precision Extraction ---
     
-    # Extract Year
+    # Extract Year first, as it's a clear marker
     year_match = re.search(r'[\(\[]?(\d{4})[\)\]]?', original_name)
     year = year_match.group(1) if year_match else None
     
-    # Extract Season and Episode with high precision
+    # Extract Season and Episode with advanced logic
     is_series = False
     season_str = ""
     episode_str = ""
-    series_match = re.search(r'[Ss]([0-9]+)[\s.]?[Ee]([0-9]+(?:[\s.-]?[Ee]?[0-9]+)?)?', original_name)
-    if not series_match:
-        series_match = re.search(r'Season[\s-]?(\d+)', original_name, re.IGNORECASE)
-    
+    # This regex is designed to find SXXEXX, SXX EXX, Season XX Episode XX, etc.
+    series_match = re.search(r'(?:[Ss]eason|S)\s?(\d+)\s?(?:[Ee]pisode|[Ee])\s?(\d+(?:-\d+)?)', original_name, re.IGNORECASE)
     if series_match:
         is_series = True
         season_num = int(series_match.group(1))
-        season_str = f"S{str(season_num).zfill(2)}"
+        season_str = f"S{season_num:02d}"
         
-        # Handle complex episode ranges like E01-06
-        episode_part_match = re.search(r'[Ee][Pp]?\.?([\d-]+)', original_name, re.IGNORECASE)
-        if episode_part_match:
-            episode_part = episode_part_match.group(1)
-            episode_nums = re.findall(r'\d+', episode_part)
-            if len(episode_nums) > 1:
-                episode_str = f"E{episode_nums[0].zfill(2)}-E{episode_nums[-1].zfill(2)}"
-            elif len(episode_nums) == 1:
-                episode_str = f"E{episode_nums[0].zfill(2)}"
-
-    # Extract ALL quality tags, languages, and other specs
+        # Handle episode ranges like 01-06
+        episode_part = series_match.group(2)
+        episode_nums = re.findall(r'\d+', episode_part)
+        if len(episode_nums) > 1:
+            episode_str = f"E{episode_nums[0].zfill(2)}-E{episode_nums[-1].zfill(2)}"
+        elif len(episode_nums) == 1:
+            episode_str = f"E{episode_nums[0].zfill(2)}"
+    
+    # Extract ALL possible quality tags and languages
     tags_to_find = [
-        '1080p', '720p', '480p', '540p', 'WEB-DL', 'WEBRip', 'BluRay', 'HDTC', 'x264', 
-        'x265', 'AAC', 'Dual Audio', 'Hindi', 'English', 'ESub', 'HEVC', 'Dua'
+        '1080p', '720p', '480p', '540p', 'WEB-DL', 'WEBRip', 'BluRay', 'HDTC', 
+        'x264', 'x265', 'AAC', 'Dual Audio', 'Hindi', 'English', 'ESub', 'HEVC', 'Dua'
     ]
     all_tags_regex = r'\b(' + '|'.join(re.escape(tag) for tag in tags_to_find) + r')\b'
     found_tags = re.findall(all_tags_regex, original_name, re.IGNORECASE)
+    # Standardize "Dua" to "Dual Audio" and remove duplicates
     quality_tags = " | ".join(sorted(list(set(tag.strip().replace("Dua", "Dual Audio") for tag in found_tags)), key=lambda x: x.lower()))
 
-    # --- Stage 2: Clean the Title ---
+    # --- Stage 2: Aggressive Title Cleaning ---
     
-    # Start with what PTN thinks is the title
-    ptn_info = PTN.parse(original_name)
-    cleaned_title = ptn_info.get('title', original_name)
+    # Start with the full name and carve away the junk
+    cleaned_title = original_name
 
-    # Be much more aggressive with cleaning
-    # Remove everything that we've already extracted
-    if year: cleaned_title = re.sub(r'(\d{4})', '', cleaned_title)
-    if is_series:
-        cleaned_title = re.sub(r'[Ss]([0-9]+)[\s.]?[Ee]([0-9]+(?:[\s.-]?[Ee]?[0-9]+)?)?', '', cleaned_title, flags=re.IGNORECASE)
-        cleaned_title = re.sub(r'Season[\s-]?(\d+)', '', cleaned_title, flags=re.IGNORECASE)
-    
-    # Remove all extracted tags from the title string
+    # Remove all extracted information to isolate the title
+    if year: cleaned_title = cleaned_title.replace(year_match.group(0), '')
+    if is_series: cleaned_title = cleaned_title.replace(series_match.group(0), '')
     for tag in found_tags:
         cleaned_title = re.sub(r'\b' + re.escape(tag) + r'\b', '', cleaned_title, flags=re.IGNORECASE)
     
-    # Remove remaining junk words
-    JUNK_WORDS = ['completed', 'web series', 'mkv']
+    # Remove junk words and symbols
+    JUNK_WORDS = ['completed', 'web series', 'mkv', 'esub']
     junk_regex = r'\b(' + '|'.join(re.escape(word) for word in JUNK_WORDS) + r')\b'
     cleaned_title = re.sub(junk_regex, '', cleaned_title, flags=re.I)
-
-    # Final cleanup of symbols and extra spaces
-    cleaned_title = re.sub(r'[\(\)\[\]\{\}]', '', cleaned_title)
-    cleaned_title = ' '.join(cleaned_title.split()).strip()
+    cleaned_title = re.sub(r'[\(\)\[\]\{\}]', '', cleaned_title) # Remove brackets
+    cleaned_title = ' '.join(cleaned_title.split()).strip() # Consolidate spaces
 
     # --- Stage 3: Assemble Final Data ---
     
