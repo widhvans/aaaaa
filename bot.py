@@ -1,5 +1,4 @@
 # bot.py
-
 import logging
 import asyncio
 from pyrogram.enums import ParseMode
