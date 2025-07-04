@@ -18,8 +18,34 @@ logger = logging.getLogger(__name__)
 PHOTO_CAPTION_LIMIT = 1024
 TEXT_MESSAGE_LIMIT = 4096
 
-# Initialize the Cinemagoer instance
 ia = Cinemagoer()
+
+def get_batch_key_from_filename(filename: str) -> str:
+    """
+    Generates a batch key based on significant words (5+ letters) in the filename.
+    """
+    try:
+        # Use PTN to get a base title first
+        parsed_info = PTN.parse(filename.replace('.', ' ').replace('_', ' '))
+        title = parsed_info.get('title', '')
+        
+        # If PTN fails, fallback to a simpler cleaning method
+        if not title:
+            name_without_ext = ".".join(filename.split('.')[:-1])
+            title = re.sub(r'[^a-zA-Z0-9\s]', '', name_without_ext.replace('.', ' ').replace('_', ' '))
+
+        # Extract significant words
+        words = {word.lower() for word in title.split() if len(word) >= 5 and not word.isdigit()}
+        
+        if not words:
+            # Fallback to the full cleaned title if no significant words are found
+            return title.lower().strip()
+            
+        # Sort words to ensure consistency ("king.lion" is same as "lion.king")
+        return ".".join(sorted(list(words)))
+    except Exception:
+        # Ultimate fallback
+        return filename.lower()
 
 def format_bytes(size):
     """Converts bytes to a human-readable format with custom rounding."""
@@ -37,135 +63,107 @@ def format_bytes(size):
 
 async def get_definitive_title_from_imdb(title_from_filename):
     """
-    Uses the cinemagoer library to find the official title and year from IMDb,
-    with added checks to prevent incorrect matches.
+    Uses the cinemagoer library to find the official title and year from IMDb.
     """
     if not title_from_filename:
         return None, None
     try:
         loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(None, lambda: ia.search_movie(title_from_filename))
+        results = await loop.run_in_executor(None, lambda: ia.search_movie(title_from_filename, results=1))
         
         if not results:
-            logger.warning(f"No IMDb results found for '{title_from_filename}'")
             return None, None
             
         movie = results[0]
-        await loop.run_in_executor(None, lambda: ia.update(movie))
+        await loop.run_in_executor(None, lambda: ia.update(movie, info=['main']))
         
         imdb_title = movie.get('title')
         imdb_year = movie.get('year')
         
-        # To prevent wildly inaccurate matches, we'll check the similarity
-        # between the filename title and the IMDb title.
         similarity = fuzz.token_sort_ratio(title_from_filename.lower(), imdb_title.lower())
         
-        if similarity < 50: # Adjust this threshold as needed
-            logger.warning(f"IMDb result '{imdb_title}' has low similarity ({similarity}%) to '{title_from_filename}'. Ignoring.")
+        if similarity < 50:
             return None, None
             
-        logger.info(f"IMDb lookup successful for '{title_from_filename}': Found '{imdb_title} ({imdb_year})'")
         return imdb_title, imdb_year
 
     except Exception as e:
         logger.error(f"Error fetching data from IMDb for '{title_from_filename}': {e}")
         return None, None
 
-async def clean_and_parse_filename(name: str):
+async def clean_and_parse_filename(name: str, cache: dict = None):
     """
-    A highly robust, multi-stage parsing engine for filenames.
+    Robustly parses filenames, now with caching for IMDb lookups.
     """
-    # --- Stage 1: Pre-cleaning ---
-    # Aggressively remove usernames, channel names, and other junk before parsing
-    cleaned_name = re.sub(r'(@|\[@)\S+', '', name) # Remove @username or [@username]
-    # Remove bracketed content that is often a channel/user tag
+    cleaned_name = re.sub(r'(@|\[@)\S+', '', name)
     cleaned_name = re.sub(r'\[\s*\w+\s*\]', '', cleaned_name) 
     
     parsed_info = PTN.parse(cleaned_name.replace('.', ' ').replace('_', ' '))
-    
     initial_title = parsed_info.get('title', '').strip()
-    year = parsed_info.get('year')
+    
+    if not initial_title: return None
+
+    # --- IMDb VERIFICATION WITH CACHING ---
+    definitive_title, definitive_year = None, None
+    if cache is not None and initial_title in cache:
+        definitive_title, definitive_year = cache[initial_title]
+        logger.info(f"IMDb CACHE HIT for '{initial_title}'")
+    else:
+        logger.info(f"IMDb CACHE MISS for '{initial_title}'. Fetching from network...")
+        definitive_title, definitive_year = await get_definitive_title_from_imdb(initial_title)
+        if cache is not None:
+            cache[initial_title] = (definitive_title, definitive_year)
+
+    final_title = definitive_title if definitive_title else initial_title
+    final_year = definitive_year if definitive_year else parsed_info.get('year')
     season = parsed_info.get('season')
     
-    # --- Stage 2: Advanced Episode & Year Parsing ---
     episode_info_str = ""
-    # Use a cleaned version of the name for robust episode detection
     search_name = name.replace('.', ' ').replace('_', ' ')
     episode_match = re.search(
         r'[Ee](?:p(?:isode)?)?\.?\s*(\d+)(?:\s*(?:-|to)\s*[Ee]?(?:p(?:isode)?)?\.?\s*(\d+))?',
-        search_name,
-        re.IGNORECASE
+        search_name, re.IGNORECASE
     )
-
     if episode_match:
         start_ep = int(episode_match.group(1))
-        # Prevent misinterpreting a year (like 2025) as an episode number
         if 1900 < start_ep < 2100 and not season:
-             if not year: year = start_ep
+             if not final_year: final_year = start_ep
         else:
-            if episode_match.group(2):
-                end_ep = int(episode_match.group(2))
-                episode_info_str = f"E{start_ep:02d}-E{end_ep:02d}"
-            else:
-                episode_info_str = f"E{start_ep:02d}"
-    # Fallback to PTN's episode parsing if our custom regex fails
+            episode_info_str = f"E{start_ep:02d}"
+            if episode_match.group(2): episode_info_str += f"-E{int(episode_match.group(2)):02d}"
     elif parsed_info.get('episode'):
         episode = parsed_info.get('episode')
-        if isinstance(episode, list):
-            episode_info_str = f"E{min(episode):02d}-E{max(episode):02d}"
-        # Again, check if it's a year and not a real episode number
-        elif not (1900 < episode < 2100 and not season):
-            episode_info_str = f"E{episode:02d}"
-
+        if isinstance(episode, list): episode_info_str = f"E{min(episode):02d}-E{max(episode):02d}"
+        elif not (1900 < episode < 2100 and not season): episode_info_str = f"E{episode:02d}"
+        
     is_series = season is not None or episode_info_str != ""
-
-    # --- Stage 3: IMDb Verification for Definitive Title ---
-    definitive_title, definitive_year = await get_definitive_title_from_imdb(initial_title)
-
-    # --- Stage 4: Assemble Final, Clean Data ---
-    final_title = definitive_title if definitive_title else initial_title
-    final_year = definitive_year if definitive_year else year
+    display_title = f"{final_title}" + (f" ({final_year})" if final_year else "")
     
-    # This is the key for batching. It's clean and consistent.
-    batch_title = f"{final_title}"
-    if is_series and season:
-        batch_title += f" S{season:02d}"
-
-    # This is the title for display in the post header.
-    display_title = f"{final_title}"
-    if final_year:
-        display_title += f" ({final_year})"
+    quality_tags_parts = [
+        parsed_info.get('resolution'), parsed_info.get('quality'), 
+        parsed_info.get('codec'), parsed_info.get('audio')
+    ]
         
-    # Re-assemble quality tags from the original filename for the post body
-    quality_tags_parts = []
-    if parsed_info.get('resolution'): quality_tags_parts.append(parsed_info.get('resolution'))
-    if parsed_info.get('quality'): quality_tags_parts.append(parsed_info.get('quality'))
-    if parsed_info.get('codec'): quality_tags_parts.append(parsed_info.get('codec'))
-    if parsed_info.get('audio'): quality_tags_parts.append(parsed_info.get('audio'))
-        
-    media_info = {
-        "batch_title": batch_title.strip(),
-        "display_title": display_title.strip(), # This will be used for the post header
-        "year": final_year,
-        "is_series": is_series,
-        "season_info": f"S{season:02d}" if season else "",
-        "episode_info": episode_info_str,
+    return {
+        "batch_title": f"{final_title} S{season:02d}" if is_series and season else final_title,
+        "display_title": display_title.strip(),
+        "year": final_year, "is_series": is_series,
+        "season_info": f"S{season:02d}" if season else "", "episode_info": episode_info_str,
         "quality_tags": " | ".join(filter(None, quality_tags_parts))
     }
-    
-    return media_info
 
-async def create_post(client, user_id, messages):
+async def create_post(client, user_id, messages, cache: dict):
     user = await get_user(user_id)
     if not user: return []
 
     media_info_list = []
-    for m in messages:
-        media = getattr(m, m.media.value, None)
-        if not media: continue
-        
-        info = await clean_and_parse_filename(media.file_name)
+    # Use asyncio.gather to parse all filenames concurrently, passing the cache
+    parse_tasks = [clean_and_parse_filename(getattr(m, m.media.value, None).file_name, cache) for m in messages if getattr(m, m.media.value, None)]
+    parsed_results = await asyncio.gather(*parse_tasks)
+
+    for i, info in enumerate(parsed_results):
         if info:
+            media = getattr(messages[i], messages[i].media.value)
             info['file_size'] = media.file_size
             info['file_unique_id'] = media.file_unique_id
             media_info_list.append(info)
@@ -173,131 +171,76 @@ async def create_post(client, user_id, messages):
     if not media_info_list: return []
 
     media_info_list.sort(key=lambda x: natural_sort_key(x.get('episode_info', '')))
-
     first_info = media_info_list[0]
-    # Use the new 'display_title' for a clean header
     primary_display_title = first_info['display_title']
-    year = first_info['year']
     
-    # The header will now use the clean display title from clean_and_parse_filename
     base_caption_header = f"🎬 **{primary_display_title}**"
-    post_poster = await get_poster(first_info['batch_title'], year) if user.get('show_poster', True) else None
+    post_poster = await get_poster(first_info['batch_title'], first_info['year']) if user.get('show_poster', True) else None
     
     footer_buttons = user.get('footer_buttons', [])
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], btn['url'])] for btn in footer_buttons]) if footer_buttons else None
     
-    header_line = "▰▱▰▱▰▱▰▱▰▱▰▱▰▱▰▱"
-    footer_line = "\n\n" + "•·•·•·•·•·•·•·•·•·••·•·•·•·•·•·•·•"
+    header_line, footer_line = "▰▱▰▱▰▱▰▱▰▱▰▱▰▱▰▱", "\n\n" + "•·•·•·•·•·•·•·•·•·••·•·•·•·•·•·•·•"
     CAPTION_LIMIT = PHOTO_CAPTION_LIMIT if post_poster else TEXT_MESSAGE_LIMIT
     
     all_link_entries = []
     for info in media_info_list:
         display_tags_parts = []
-        if info['is_series'] and info['episode_info']:
-            display_tags_parts.append(info['episode_info'])
-        if info['quality_tags']:
-            display_tags_parts.append(info['quality_tags'])
-        
+        if info['is_series'] and info['episode_info']: display_tags_parts.append(info['episode_info'])
+        if info['quality_tags']: display_tags_parts.append(info['quality_tags'])
         display_tags = " | ".join(filter(None, display_tags_parts))
-
-        composite_id = f"{user_id}_{info['file_unique_id']}"
-        link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{composite_id}"
+        link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{user_id}_{info['file_unique_id']}"
         file_size_str = format_bytes(info['file_size'])
-
-        file_entry = f"📁 {display_tags}" if display_tags else "📁"
-        file_entry += f"\n    ➤ [Click Here]({link}) ({file_size_str})" if file_size_str else f"\n    ➤ [Click Here]({link})"
-        all_link_entries.append(file_entry)
+        all_link_entries.append(f"📁 {display_tags or 'File'}\n    ➤ [Click Here]({link}) ({file_size_str})")
 
     final_posts, current_links_part = [], []
     base_caption = f"{header_line}\n{base_caption_header}\n{header_line}"
     current_length = len(base_caption) + len(footer_line)
 
     for entry in all_link_entries:
-        entry_length = len(entry) + 2
-        if current_length + entry_length > CAPTION_LIMIT:
-            if current_links_part:
-                caption = f"{base_caption}\n\n" + "\n\n".join(current_links_part) + footer_line
-                final_posts.append((post_poster if not final_posts else None, caption, footer_keyboard))
-            current_links_part, current_length = [entry], len(base_caption) + len(footer_line) + entry_length
-        else:
-            current_links_part.append(entry)
-            current_length += entry_length
+        if current_length + len(entry) + 2 > CAPTION_LIMIT and current_links_part:
+            final_posts.append((post_poster if not final_posts else None, f"{base_caption}\n\n" + "\n\n".join(current_links_part) + footer_line, footer_keyboard))
+            current_links_part = []
+        current_links_part.append(entry)
+        current_length = len(base_caption) + len(footer_line) + sum(len(p) + 2 for p in current_links_part)
             
     if current_links_part:
-        caption = f"{base_caption}\n\n" + "\n\n".join(current_links_part) + footer_line
-        final_posts.append((post_poster if not final_posts else None, caption, footer_keyboard))
+        final_posts.append((post_poster if not final_posts else None, f"{base_caption}\n\n" + "\n\n".join(current_links_part) + footer_line, footer_keyboard))
         
-    total_posts = len(final_posts)
-    if total_posts > 1:
+    if len(final_posts) > 1:
         for i, (poster, cap, foot) in enumerate(final_posts):
-            new_header = f"{primary_display_title} (Part {i+1}/{total_posts})"
-            final_posts[i] = (poster, cap.replace(primary_display_title, new_header), foot)
-    elif total_posts == 1 and final_posts:
-        _, cap, foot = final_posts[0]
-        final_posts[0] = (post_poster, cap, foot)
-        
+            final_posts[i] = (poster, cap.replace(primary_display_title, f"{primary_display_title} (Part {i+1}/{len(final_posts)})"), foot)
+            
     return final_posts
 
 async def get_title_key(filename: str) -> str:
     media_info = await clean_and_parse_filename(filename)
-    # Return the batch title, which now includes the season for series
     return media_info['batch_title'] if media_info else None
 
-def calculate_title_similarity(title1: str, title2: str) -> float:
-    return fuzz.token_sort_ratio(title1.lower(), title2.lower())
-
-def go_back_button(user_id):
-    return InlineKeyboardMarkup([[InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")]])
-
-async def get_file_raw_link(message):
-    return f"https.t.me/c/{str(message.chat.id).replace('-100', '')}/{message.id}"
-
 def natural_sort_key(s):
-    if not isinstance(s, str):
-        return [s]
-    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'([0-9]+)', s)]
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'([0-9]+)', s or '')]
 
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id) or {}
-    post_channels = user_settings.get('post_channels', [])
-    index_channel = user_settings.get('index_db_channel')
-    
-    menu_text = "✅ **Setup Complete!**\n\nYou can now forward files to your Index Channel." if index_channel and post_channels else "⚙️ **Bot Settings**\n\nChoose an option below to configure the bot."
-    shortener_text = "⚙️ Shortener Settings" if user_settings.get('shortener_url') else "🔗 Set Shortener"
-    fsub_text = "⚙️ Manage FSub" if user_settings.get('fsub_channel') else "📢 Set FSub"
-    
+    text = "✅ **Setup Complete!**\n\nYou can now forward files to your Index Channel." if user_settings.get('index_db_channel') and user_settings.get('post_channels') else "⚙️ **Bot Settings**\n\nChoose an option below to configure the bot."
     buttons = [
         [InlineKeyboardButton("🗂️ Manage Channels", callback_data="manage_channels_menu")],
-        [InlineKeyboardButton(shortener_text, callback_data="shortener_menu"), InlineKeyboardButton("🔄 Backup Links", callback_data="backup_links")],
+        [InlineKeyboardButton("🔗 Shortener", callback_data="shortener_menu"), InlineKeyboardButton("🔄 Backup", callback_data="backup_links")],
         [InlineKeyboardButton("✍️ Filename Link", callback_data="filename_link_menu"), InlineKeyboardButton("👣 Footer Buttons", callback_data="manage_footer")],
         [InlineKeyboardButton("🖼️ IMDb Poster", callback_data="poster_menu"), InlineKeyboardButton("📂 My Files", callback_data="my_files_1")],
-        [InlineKeyboardButton(fsub_text, callback_data="fsub_menu"), InlineKeyboardButton("❓ How to Download", callback_data="how_to_download_menu")]
+        [InlineKeyboardButton("📢 FSub", callback_data="fsub_menu"), InlineKeyboardButton("❓ How to Download", callback_data="how_to_download_menu")]
     ]
-    
-    if user_id == Config.ADMIN_ID:
-        pass
-        
-    return menu_text, InlineKeyboardMarkup(buttons)
+    return text, InlineKeyboardMarkup(buttons)
 
 async def notify_and_remove_invalid_channel(client, user_id, channel_id, channel_type):
-    user_settings = await get_user(user_id)
-    if not user_settings: return False
-    
-    db_key = f"{channel_type.lower()}_channels"
-    if channel_type.lower() == 'index db':
-        db_key = 'index_db_channel'
-        
     try:
         await client.get_chat_member(channel_id, "me")
         return True
     except Exception:
-        error_text = f"⚠️ **Channel Inaccessible**\n\nYour {channel_type.title()} Channel (ID: `{channel_id}`) has been automatically removed."
-        try:
-            await client.send_message(user_id, error_text)
-            if isinstance(user_settings.get(db_key), list):
-                 await remove_from_list(user_id, db_key, channel_id)
-            else:
-                 await update_user(user_id, db_key, None)
-        except Exception as e:
-            logger.error(f"Failed to notify/remove channel for user {user_id}. Error: {e}")
+        db_key = 'index_db_channel' if channel_type == 'Index DB' else 'post_channels'
+        if isinstance(await get_user(user_id).get(db_key), list):
+             await remove_from_list(user_id, db_key, channel_id)
+        else:
+             await update_user(user_id, db_key, None)
+        await client.send_message(user_id, f"⚠️ **Channel Inaccessible**\n\nYour {channel_type} Channel (ID: `{channel_id}`) has been automatically removed because I could not access it.")
         return False
