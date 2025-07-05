@@ -18,16 +18,22 @@ async def handle_private_file(client, message):
     
     processing_msg = await message.reply_text("⏳ Processing your file...", quote=True)
     try:
+        # Get the actual media object from the message
+        media = getattr(message, message.media.value, None)
+        if not media:
+            return await processing_msg.edit_text("Could not find media in the message.")
+
         copied_message = await message.copy(client.owner_db_channel)
         download_link = f"http://{client.vps_ip}:{client.vps_port}/download/{copied_message.id}"
         
         buttons = [[InlineKeyboardButton("📥 Fast Download", url=download_link)]]
         keyboard = InlineKeyboardMarkup(buttons)
         
+        # Use the correct attributes from the media object
         await client.send_cached_media(
             chat_id=message.chat.id,
-            file_id=message.media.file_id,
-            caption=f"`{message.media.file_name}`",
+            file_id=media.file_id,
+            caption=f"`{media.file_name}`",
             reply_markup=keyboard,
             quote=True
         )
@@ -170,8 +176,9 @@ async def handle_public_file_request(client, message, requester_id, payload):
                     [InlineKeyboardButton("🔄 Retry", callback_data=f"retry_{payload}")]
                 ]
                 return await message.reply_text("You must join the channel to continue.", reply_markup=InlineKeyboardMarkup(buttons))
-        except (ChatAdminRequired, ChannelInvalid, PeerIdInvalid, ChannelPrivate) as e:
+        except (ChatAdminRequired, ChannelInvalid, PeerIdInvalid, ChannelPrivate, UserNotParticipant) as e:
             logger.error(f"FSub channel error for owner {owner_id} (Channel: {fsub_channel}): {e}")
+            # If bot isn't in the channel, just ignore FSub and continue
             pass 
     
     try:
