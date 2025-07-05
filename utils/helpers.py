@@ -89,115 +89,100 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     """
     original_name = name
 
-    # --- PASS 1: Pre-Normalization and Heavy Junk Removal ---
-    # Work with name before extension
-    name = ".".join(name.split('.')[:-1]) if '.' in name else name
-    # Aggressively remove all content within brackets: (), [], {}
-    name = re.sub(r'[\(\[\{].*?[\)\]\}]', '', name)
-    # Replace common separators with spaces
-    name = name.replace('.', ' ').replace('_', ' ').strip()
-    # Remove common symbols and channel-like tags
-    name = re.sub(r'[#@$%&~]', '', name)
-    name = re.sub(r'「.*?」', '', name) # For special brackets
+    # --- PASS 1: Light Cleaning for PTN ---
+    # Just replace separators. Don't remove any keywords yet.
+    ptn_name = name.replace('.', ' ').replace('_', ' ').strip()
+    # Remove bracketed content before parsing
+    ptn_name = re.sub(r'[\(\[\{].*?[\)\]\}]', '', ptn_name)
+    parsed_info = PTN.parse(ptn_name)
 
-    # --- PASS 2: Regex-based Keyword Junk Removal ---
-    junk_words = [
+    # --- PASS 2: Extract All Possible Metadata ---
+    # Store all the useful tags PTN found before we clean the title
+    quality_tags_parts = [
+        parsed_info.get('resolution'),
+        parsed_info.get('quality'),
+        parsed_info.get('codec'),
+        parsed_info.get('audio')
+    ]
+    quality_tags = " | ".join(filter(None, quality_tags_parts))
+    season = parsed_info.get('season')
+    episode = parsed_info.get('episode')
+    year = parsed_info.get('year')
+    initial_title = parsed_info.get('title', '').strip()
+
+    # --- PASS 3: Aggressively Clean ONLY the Title String ---
+    title_to_clean = initial_title
+    
+    # Remove common symbols and channel-like tags
+    title_to_clean = re.sub(r'[#@$%&~+]', '', title_to_clean)
+    title_to_clean = re.sub(r'「.*?」', '', title_to_clean) 
+    
+    # This regex now includes patterns for more complex junk like "192Kbps"
+    junk_patterns = [
+        r'\d+Kbps',
+        # General junk & scene tags
         'UNCUT', 'ORG', 'HQ', 'ESubs', 'MSubs', 'REMASTERED', 'REPACK', 'PROPER', 'iNTERNAL',
         'Sample', 'Video', 'Dual', 'Audio', 'Multi', 'Hollywood', 'Movie', 'New', 'Episode',
         'Combined', 'Complete', 'Chapter',
+        # Uploader/Group/Bot tags
         'PSA', 'JC', 'DIDAR', 'StarBoy', 'ClipmateMovies', 'OTT_Downloader_Bot', 'OTT_WebdlBot', 'MAPOriginals',
+        # Languages
         'Hindi', 'English', 'Tamil', 'Telugu', 'Kannada', 'Malayalam', 'Punjabi', 'Japanese', 'Korean',
-        'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5',
-        '1080p', '720p', '576p', '480p', '360p', '240p', '4k', '3D',
-        'x264', 'x265', 'h264', 'h265', '10bit', 'HEVC',
-        'HDCAM', 'HDTC', 'HDRip', 'BluRay', 'WEB-DL', 'Web-Rip', 'DVDRip', 'BDRip',
-        'DTS', 'AAC', 'AC3', 'E-AC-3', 'E-AC3', 'DD', 'DDP', 'HE-AAC',
-        'Kbps'
+        # Streaming Services / Sources
+        'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5'
     ]
-    # This regex ensures we only match whole words (case-insensitive)
-    junk_pattern_re = r'\b(' + r'|'.join(junk_words) + r')\b'
-    name = re.sub(junk_pattern_re, '', name, flags=re.IGNORECASE)
+    junk_pattern_re = r'\b(' + r'|'.join(junk_patterns) + r')\b'
+    cleaned_title = re.sub(junk_pattern_re, title_to_clean, flags=re.IGNORECASE)
 
-    # --- PASS 3: Date and Final Cleanup ---
-    # Remove date patterns like "September 11, 2023" or "September 11 2023"
-    date_pattern = r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}\b'
-    name = re.sub(date_pattern, '', name, flags=re.IGNORECASE)
+    # Remove date patterns like "September 11, 2023"
+    date_pattern = r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)[\s,]*\d{1,2}[\s,]*\d{4}\b'
+    cleaned_title = re.sub(date_pattern, '', cleaned_title, flags=re.IGNORECASE)
+    
     # Final cleanup of extra spaces
-    name = re.sub(r'\s+', ' ', name).strip()
-    
-    # --- PASS 4: Intelligent Parsing and De-duplication ---
-    parsed_info = PTN.parse(name)
-    initial_title = parsed_info.get('title', '').strip()
-    
-    if initial_title:
-        # De-duplicate by splitting the string by the found title and taking the first part.
-        # This handles cases like "Title S01E01 Title" -> "Title S01E01"
-        if name.lower().count(initial_title.lower()) > 1:
-            first_occurrence_index = name.lower().find(initial_title.lower())
-            rest_of_string = name[first_occurrence_index + len(initial_title):]
-            
-            second_occurrence_index = rest_of_string.lower().find(initial_title.lower())
-            if second_occurrence_index != -1:
-                # Cut the string off before the second occurrence of the title
-                name = name[:first_occurrence_index + len(initial_title) + second_occurrence_index]
-                # Re-parse after deduplication
-                parsed_info = PTN.parse(name)
-                initial_title = parsed_info.get('title', '').strip()
+    cleaned_title = re.sub(r'\s+', ' ', cleaned_title).strip()
 
-    # --- PASS 5: Final Extraction and IMDb Verification ---
-    initial_title = re.sub(r'^\W*\d+mm\W*', '', initial_title, flags=re.IGNORECASE).strip()
-    all_years = re.findall(r'\b(19[89]\d|20[0-2]\d)\b', original_name)
-    year = all_years[0] if all_years else parsed_info.get('year')
+    # De-duplicate the title if it appears twice (e.g., "Title S01E01 Title")
+    if cleaned_title:
+        title_words = cleaned_title.split()
+        if len(title_words) > 2 and title_words[0].lower() == title_words[-1].lower():
+             cleaned_title = ' '.join(title_words[:-1])
 
-    if not initial_title:
-        initial_title = PTN.parse(original_name).get('title', '')
-        if not initial_title: return None
+    if not cleaned_title: cleaned_title = initial_title # Fallback
 
+    # --- PASS 4: IMDb Verification ---
+    # Use original_name to find year if PTN missed it after cleaning
+    if not year:
+        found_years = re.findall(r'\b(19[89]\d|20[0-2]\d)\b', original_name)
+        if found_years: year = found_years[0]
+        
     definitive_title, definitive_year = None, None
-    cache_key = f"{initial_title}_{year}" if year else initial_title
+    cache_key = f"{cleaned_title}_{year}" if year else cleaned_title
     if cache is not None and cache_key in cache:
         definitive_title, definitive_year = cache[cache_key]
-        logger.info(f"IMDb CACHE HIT for '{cache_key}'")
     else:
-        logger.info(f"IMDb CACHE MISS for '{cache_key}'. Fetching from network...")
-        definitive_title, definitive_year = await get_definitive_title_from_imdb(f"{initial_title} {year}" if year else initial_title)
+        definitive_title, definitive_year = await get_definitive_title_from_imdb(f"{cleaned_title} {year}" if year else cleaned_title)
         if cache is not None:
             cache[cache_key] = (definitive_title, definitive_year)
 
-    final_title = definitive_title if definitive_title else initial_title
+    # --- PASS 5: Reconstruct and Return ---
+    final_title = definitive_title if definitive_title else cleaned_title
     final_year = definitive_year if definitive_year else year
-    season = parsed_info.get('season')
     
     episode_info_str = ""
-    search_name = original_name.replace('.', ' ').replace('_', ' ')
-    episode_match = re.search(
-        r'[Ee](?:p(?:isode)?)?\.?\s*(\d+)(?:\s*(?:-|to)\s*[Ee]?(?:p(?:isode)?)?\.?\s*(\d+))?',
-        search_name, re.IGNORECASE
-    )
-    if episode_match:
-        start_ep = int(episode_match.group(1))
-        if not (1900 < start_ep < 2100 and not season):
-            episode_info_str = f"E{start_ep:02d}"
-            if episode_match.group(2): episode_info_str += f"-E{int(episode_match.group(2)):02d}"
-    elif parsed_info.get('episode'):
-        episode = parsed_info.get('episode')
+    if episode:
         if isinstance(episode, list): episode_info_str = f"E{min(episode):02d}-E{max(episode):02d}"
-        elif not (1900 < episode < 2100 and not season): episode_info_str = f"E{episode:02d}"
+        else: episode_info_str = f"E{episode:02d}"
         
     is_series = season is not None or episode_info_str != ""
     display_title = f"{final_title}" + (f" ({final_year})" if final_year else "")
-    
-    quality_tags_parts = [
-        parsed_info.get('resolution'), parsed_info.get('quality'), 
-        parsed_info.get('codec'), parsed_info.get('audio')
-    ]
         
     return {
         "batch_title": f"{final_title} S{season:02d}" if is_series and season else final_title,
         "display_title": display_title.strip(),
         "year": final_year, "is_series": is_series,
-        "season_info": f"S{season:02d}" if season else "", "episode_info": episode_info_str,
-        "quality_tags": " | ".join(filter(None, quality_tags_parts))
+        "season_info": f"S{season:02d}" if season else "", 
+        "episode_info": episode_info_str,
+        "quality_tags": quality_tags
     }
 
 async def create_post(client, user_id, messages, cache: dict):
