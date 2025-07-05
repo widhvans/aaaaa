@@ -85,19 +85,21 @@ async def get_definitive_title_from_imdb(title_from_filename):
 
 async def clean_and_parse_filename(name: str, cache: dict = None):
     """
-    A next-gen, multi-pass robust filename parser.
+    A next-gen, multi-pass robust filename parser that preserves all metadata.
     """
     original_name = name
 
-    # --- PASS 1: Light Cleaning for PTN ---
-    ptn_name = name.replace('.', ' ').replace('_', ' ').strip()
-    ptn_name = re.sub(r'[\(\[\{].*?[\)\]\}]', '', ptn_name)
+    # --- PASS 1: Parse First, Clean Later ---
+    # Do a light cleaning for PTN, but keep brackets for episode ranges.
+    ptn_name = name.replace('.', ' ').replace('_', ' ')
     parsed_info = PTN.parse(ptn_name)
 
-    # --- PASS 2: Extract All Possible Metadata ---
+    # --- PASS 2: Extract and Safeguard All Metadata ---
     quality_tags_parts = [
-        parsed_info.get('resolution'), parsed_info.get('quality'),
-        parsed_info.get('codec'), parsed_info.get('audio')
+        parsed_info.get('resolution'),
+        parsed_info.get('quality'),
+        parsed_info.get('codec'),
+        parsed_info.get('audio')
     ]
     quality_tags = " | ".join(filter(None, quality_tags_parts))
     season = parsed_info.get('season')
@@ -108,31 +110,24 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     # --- PASS 3: Aggressively Clean ONLY the Title String ---
     title_to_clean = initial_title
     
-    # Remove year from the title string itself to prevent duplicates like "Title 2023 (2023)"
+    # Remove year from the title string itself to prevent duplicates
     if year:
         title_to_clean = re.sub(r'\b' + str(year) + r'\b', '', title_to_clean)
 
+    # Remove symbols and merged junk words (e.g., VegaMovies, ExtraFlix)
     title_to_clean = re.sub(r'[#@$%&~+]', '', title_to_clean)
     title_to_clean = re.sub(r'「.*?」', '', title_to_clean) 
-    
-    # Remove "merged" junk words (e.g., VegaMovies, ExtraFlix)
     merged_junk_substrings = ['flix', 'movie', 'movies', 'moviez', 'filmy', 'movieshub']
     merged_junk_re = r'\b\w*(' + r'|'.join(merged_junk_substrings) + r')\w*\b'
     title_to_clean = re.sub(merged_junk_re, '', title_to_clean, flags=re.IGNORECASE)
-
+    
     # Remove standard junk words (whole words only)
     junk_words = [
-        r'\d+Kbps', 'www',
-        'UNCUT', 'ORG', 'HQ', 'ESubs', 'MSubs', 'REMASTERED', 'REPACK', 'PROPER', 'iNTERNAL',
-        'Sample', 'Video', 'Dual', 'Audio', 'Multi', 'Hollywood', 'New', 'Episode',
-        'Combined', 'Complete', 'Chapter',
-        'PSA', 'JC', 'DIDAR', 'StarBoy',
+        r'\d+Kbps', 'www', 'UNCUT', 'ORG', 'HQ', 'ESubs', 'MSubs', 'REMASTERED', 'REPACK',
+        'PROPER', 'iNTERNAL', 'Sample', 'Video', 'Dual', 'Audio', 'Multi', 'Hollywood',
+        'New', 'Episode', 'Combined', 'Complete', 'Chapter', 'PSA', 'JC', 'DIDAR', 'StarBoy',
         'Hindi', 'English', 'Tamil', 'Telugu', 'Kannada', 'Malayalam', 'Punjabi', 'Japanese', 'Korean',
-        'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5',
-        '1080p', '720p', '576p', '480p', '360p', '240p', '4k', '3D',
-        'x264', 'x265', 'h264', 'h265', '10bit', 'HEVC',
-        'HDCAM', 'HDTC', 'HDRip', 'BluRay', 'WEB-DL', 'Web-Rip', 'DVDRip', 'BDRip',
-        'DTS', 'AAC', 'AC3', 'E-AC-3', 'E-AC3', 'DD', 'DDP', 'HE-AAC'
+        'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5'
     ]
     junk_pattern_re = r'\b(' + r'|'.join(junk_words) + r')\b'
     cleaned_title = re.sub(junk_pattern_re, '', title_to_clean, flags=re.IGNORECASE)
@@ -142,6 +137,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     
     cleaned_title = re.sub(r'\s+', ' ', cleaned_title).strip()
 
+    # De-duplicate the title if it appears twice
     if cleaned_title:
         title_words = cleaned_title.split()
         if len(title_words) > 2 and title_words[0].lower() == title_words[-1].lower():
@@ -167,11 +163,17 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     final_title = definitive_title if definitive_title else cleaned_title
     final_year = definitive_year if definitive_year else year
     
+    # Format episode range correctly
     episode_info_str = ""
     if episode:
-        if isinstance(episode, list): episode_info_str = f"E{min(episode):02d}-E{max(episode):02d}"
-        else: episode_info_str = f"E{episode:02d}"
-        
+        if isinstance(episode, list):
+            if len(episode) > 1:
+                episode_info_str = f"E{min(episode):02d}-E{max(episode):02d}"
+            else:
+                episode_info_str = f"E{episode[0]:02d}"
+        else:
+            episode_info_str = f"E{episode:02d}"
+            
     is_series = season is not None or episode_info_str != ""
     display_title = f"{final_title.strip()}" + (f" ({final_year})" if final_year else "")
         
