@@ -103,37 +103,31 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     name_for_parsing = name.replace('_', ' ').replace('.', ' ')
     name_for_parsing = re.sub(r'www\..*?\..*?(?=\s|$)', '', name_for_parsing, flags=re.IGNORECASE)
     
-    # More aggressive bracket cleaning for PTN, but keep original for episode parsing
+    # Keep parentheses for PTN to correctly parse years like (2025)
     name_for_ptn = re.sub(r'\[.*?\]', '', name_for_parsing).strip()
-    name_for_ptn = re.sub(r'\(.*?\)', '', name_for_ptn).strip()
 
 
     season_info_str = ""
     episode_info_str = ""
 
     # --- NEW PASS 1: High-confidence numeric range episode detection ---
-    # Looks for patterns like [09 To 12 Eps], Ep.01-05, etc.
     search_name_for_eps = name.replace('_', '.').replace(' ', '.')
     range_patterns = [
-        # Matches Ep.01-05, E.01-05, Ep 01-05 etc.
         r'\b(?:E|Ep|Episode)s?\.?\s?(\d{1,4})\.?\s?(?:to|-|–|—)\.?\s?(\d{1,4})\b',
-        # Matches [ 01-12 ] or [01 to 12]
         r'\[\s*(\d{1,4})\s*(?:to|-|–|—)\s*(\d{1,4})\s*\]',
-        # Matches a range directly after a season tag, e.g., S01.01-12
         r'\bS(\d{1,2})\.?\s?(\d{1,4})\.?\s?(?:to|-|–|—)\.?\s?(\d{1,4})\b'
     ]
     for pattern in range_patterns:
         match = re.search(pattern, search_name_for_eps, re.IGNORECASE)
         if match:
             groups = match.groups()
-            if pattern.startswith(r'\bS'): # Handle the third pattern
-                if not season_info_str: # Only set season if not already found
+            if pattern.startswith(r'\bS'):
+                if not season_info_str:
                     season_info_str = f"S{int(groups[0]):02d}"
                 start_ep, end_ep = groups[1], groups[2]
             else:
                 start_ep, end_ep = groups[0], groups[1]
             
-            # Ensure it's an increasing range
             if int(start_ep) < int(end_ep):
                 episode_info_str = f"E{int(start_ep):02d}-E{int(end_ep):02d}"
                 name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
@@ -177,13 +171,13 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
             elif episode: episode_info_str = f"E{episode[0]:02d}"
         else: episode_info_str = f"E{episode:02d}"
     
-    year = parsed_info.get('year')
+    year_from_filename = parsed_info.get('year')
 
     # --- PASS 5: Aggressive Title Cleaning on the result of PTN ---
     title_to_clean = initial_title
     
-    if year:
-        title_to_clean = re.sub(r'\b' + str(year) + r'\b', '', title_to_clean)
+    if year_from_filename:
+        title_to_clean = re.sub(r'\b' + str(year_from_filename) + r'\b', '', title_to_clean)
 
     title_to_clean = re.sub(r'\bS\d{1,2}\b|\bE\d{1,4}\b', '', title_to_clean, flags=re.IGNORECASE)
     
@@ -198,35 +192,33 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     junk_pattern_re = r'\b(' + r'|'.join(junk_words) + r')\b'
     cleaned_title = re.sub(junk_pattern_re, '', title_to_clean, flags=re.IGNORECASE)
     
-    cleaned_title = re.sub(r'\b\d{1,4}\b', '', cleaned_title) # remove any remaining year-like numbers
-    cleaned_title = re.sub(r'[-_.]', ' ', cleaned_title) # replace separators with spaces
-    cleaned_title = re.sub(r'\s+', ' ', cleaned_title).strip() # normalize whitespace
+    cleaned_title = re.sub(r'\b\d{1,4}\b', '', cleaned_title)
+    cleaned_title = re.sub(r'[-_.]', ' ', cleaned_title)
+    cleaned_title = re.sub(r'\s+', ' ', cleaned_title).strip()
     
-    # If cleaning results in an empty string, fall back to the original name's base
     if not cleaned_title: cleaned_title = " ".join(original_name.split('.')[:-1])
 
     # --- PASS 6: IMDb Verification (with Caching) ---
-    if not year:
-        found_years = re.findall(r'\b(19[89]\d|20[0-3]\d)\b', original_name)
-        if found_years: year = found_years[0]
+    if not year_from_filename:
+        found_years = re.findall(r'\b(19\d{2}|20\d{2})\b', original_name)
+        if found_years: year_from_filename = int(found_years[0])
         
-    definitive_title, definitive_year = None, None
-    cache_key = f"{cleaned_title}_{year}" if year else cleaned_title
+    definitive_title, definitive_year_from_imdb = None, None
+    cache_key = f"{cleaned_title}_{year_from_filename}" if year_from_filename else cleaned_title
     if cache is not None and cache_key in cache:
-        definitive_title, definitive_year = cache[cache_key]
+        definitive_title, definitive_year_from_imdb = cache[cache_key]
         logger.info(f"IMDb CACHE HIT for '{cache_key}'")
     else:
-        # Use the aggressively cleaned title for the IMDb search
-        definitive_title, definitive_year = await get_definitive_title_from_imdb(cleaned_title)
+        definitive_title, definitive_year_from_imdb = await get_definitive_title_from_imdb(cleaned_title)
         if cache is not None:
-            cache[cache_key] = (definitive_title, definitive_year)
+            cache[cache_key] = (definitive_title, definitive_year_from_imdb)
 
     # --- PASS 7: Reconstruct and Return ---
     final_title = definitive_title if definitive_title else cleaned_title.title()
-    final_year = definitive_year if definitive_year else year
+    # **FINAL FIX**: Prioritize year from the filename. Fallback to IMDb only if no year is found.
+    final_year = year_from_filename if year_from_filename else definitive_year_from_imdb
     is_series = bool(season_info_str or episode_info_str)
 
-    # --- FINAL FIX: Construct the display title correctly with season ---
     display_title = final_title.strip()
     if is_series and season_info_str:
         display_title += f" {season_info_str}"
@@ -265,7 +257,6 @@ async def create_post(client, user_id, messages, cache: dict):
     primary_display_title = first_info['display_title']
     
     base_caption_header = f"🎬 **{primary_display_title}**"
-    # Use the cleaner display title for poster search now
     poster_search_query = re.sub(r'\sS\d{2}', '', primary_display_title).strip() 
     post_poster = await get_poster(poster_search_query, first_info['year']) if user.get('show_poster', True) else None
     
@@ -279,7 +270,6 @@ async def create_post(client, user_id, messages, cache: dict):
     for info in media_info_list:
         display_tags_parts = []
         
-        # New logic to format episode string as "EP 01-05"
         if info.get('episode_info'):
             numbers = re.findall(r'\d+', info['episode_info'])
             if numbers:
