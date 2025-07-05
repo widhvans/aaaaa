@@ -1,4 +1,4 @@
-import os
+import os 
 
 class Config:
     # Your API details from my.telegram.org
