@@ -58,28 +58,35 @@ async def get_definitive_title_from_imdb(title_from_filename):
         return None, None
     try:
         loop = asyncio.get_event_loop()
-        # Log the exact title being searched
         logger.info(f"Querying IMDb with cleaned title: '{title_from_filename}'")
         results = await loop.run_in_executor(None, lambda: ia.search_movie(title_from_filename, results=1))
         
         if not results:
+            logger.warning(f"IMDb returned no results for '{title_from_filename}'")
             return None, None
             
         movie = results[0]
         imdb_title_raw = movie.get('title')
         
         # Stricter similarity check
-        similarity = fuzz.token_set_ratio(title_from_filename.lower(), imdb_title_raw.lower())
+        normalized_original = title_from_filename.lower().strip()
+        normalized_imdb = imdb_title_raw.lower().strip()
         
-        # If similarity is less than 90, reject the match. This is a very strict check.
-        if similarity < 90:
-            logger.warning(f"IMDb mismatch REJECTED! Original: '{title_from_filename}', IMDb: '{imdb_title_raw}', Similarity: {similarity}%")
+        similarity = fuzz.ratio(normalized_original, normalized_imdb)
+        token_set_similarity = fuzz.token_set_ratio(normalized_original, normalized_imdb)
+
+        logger.info(f"IMDb Check: Original='{normalized_original}', IMDb='{normalized_imdb}', Ratio Similarity={similarity}%, Token Set Similarity={token_set_similarity}%")
+
+        # Use a high threshold, but token_set_ratio is good for handling extra words
+        if token_set_similarity < 95 and similarity < 85:
+            logger.warning(f"IMDb mismatch REJECTED! Original: '{title_from_filename}', IMDb: '{imdb_title_raw}', Similarity too low.")
             return None, None
 
         await loop.run_in_executor(None, lambda: ia.update(movie, info=['main']))
         
         imdb_title = movie.get('title')
         imdb_year = movie.get('year')
+        logger.info(f"IMDb match ACCEPTED for '{title_from_filename}': '{imdb_title} ({imdb_year})'")
         return imdb_title, imdb_year
 
     except Exception as e:
@@ -244,7 +251,7 @@ async def create_post(client, user_id, messages, cache: dict):
     primary_display_title = first_info['display_title']
     
     base_caption_header = f"🎬 **{primary_display_title}**"
-    post_poster = await get_poster(first_info['batch_title'], first_info['year']) if user.get('show_poster', True) else None
+    post_poster = await get_poster(primary_display_title, first_info['year']) if user.get('show_poster', True) else None
     
     footer_buttons = user.get('footer_buttons', [])
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], url=btn['url'])] for btn in footer_buttons]) if footer_buttons else None
