@@ -92,12 +92,14 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     season_info_str = ""
 
     # --- PASS 1: Manual Extraction of Complex Patterns (Episode Ranges & Seasons) ---
-    # This engine runs first to find all possible episode range formats.
+    # This new, powerful engine runs first to find all possible episode range formats.
     range_patterns = [
-        r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*-\s*(\d{1,4})\s*\]',
-        r'\b(?:E|EP|Ep\.)\s*(\d{1,4})\s*(?:-)\s*(\d{1,4})\b',
-        r'\[\s*(\d{1,4})\s*to\s*(\d{1,4})\s*Eps?\s*\]',
-        r'\[\s*(?:E|EP)\s*(\d{1,4})\s*to\s*(\d{1,4})\s*\]'
+        # Format: [E01-E03], [E01 - E03], [01-03]
+        r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\s*\]',
+        # Format: [E01 to E03], [EP 01 TO 03], [09 To 12 Eps]
+        r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*to\s*(\d{1,4})\s*Eps?\]',
+        # Format: E01-E03, Ep.01-05, S01EP01-05 (handles Ep. with or without space/dot)
+        r'\b(?:E|EP|Ep|Episode)[\. ]?\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\b',
     ]
     for pattern in range_patterns:
         range_match = re.search(pattern, name_for_parsing, re.IGNORECASE)
@@ -134,7 +136,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
 
     title_to_clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', title_to_clean)
     title_to_clean = re.sub(r'[#@$%&~+]', '', title_to_clean)
-    title_to_clean = re.sub(r'「.*?」', '', title_to_clean)
+    title_to_clean = re.sub(r'「.*?」', '', title_to_clean) 
     merged_junk_substrings = ['flix', 'movie', 'movies', 'moviez', 'filmy', 'movieshub']
     merged_junk_re = r'\b\w*(' + r'|'.join(merged_junk_substrings) + r')\w*\b'
     title_to_clean = re.sub(merged_junk_re, '', title_to_clean, flags=re.IGNORECASE)
@@ -153,7 +155,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     cleaned_title = re.sub(date_pattern, '', cleaned_title, flags=re.IGNORECASE)
     
     cleaned_title = re.sub(r'\s+', ' ', cleaned_title).strip()
-    
+
     if cleaned_title:
         title_words = cleaned_title.split()
         if len(title_words) > 2 and title_words[0].lower() == title_words[-1].lower():
@@ -161,20 +163,33 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
 
     if not cleaned_title: cleaned_title = initial_title
 
-    # --- PASS 5: IMDb Verification ---
+    # --- PASS 5: IMDb Verification (with Caching) ---
     if not year:
         found_years = re.findall(r'\b(19[89]\d|20[0-3]\d)\b', original_name)
         if found_years: year = found_years[0]
         
-    definitive_title, definitive_year = await get_definitive_title_from_imdb(cleaned_title)
+    definitive_title, definitive_year = None, None
+    cache_key = f"{cleaned_title}_{year}" if year else cleaned_title
+    if cache is not None and cache_key in cache:
+        definitive_title, definitive_year = cache[cache_key]
+        logger.info(f"IMDb CACHE HIT for '{cache_key}'")
+    else:
+        logger.info(f"IMDb CACHE MISS for '{cache_key}'. Fetching from network...")
+        definitive_title, definitive_year = await get_definitive_title_from_imdb(cleaned_title)
+        if cache is not None:
+            cache[cache_key] = (definitive_title, definitive_year)
 
     # --- PASS 6: Reconstruct and Return ---
     final_title = definitive_title if definitive_title else cleaned_title
     final_year = definitive_year if definitive_year else year
     
+    # Final episode formatting, prioritizing the manually found range
     if not episode_info_str and episode:
         if isinstance(episode, list):
-            episode_info_str = f"E{episode[0]:02d}"
+            if len(episode) > 1:
+                episode_info_str = f"E{min(episode):02d}-E{max(episode):02d}"
+            elif episode:
+                episode_info_str = f"E{episode[0]:02d}"
         else:
             episode_info_str = f"E{episode:02d}"
             
