@@ -172,8 +172,9 @@ async def create_post(client, user_id, messages, cache: dict):
     base_caption_header = f"🎬 **{primary_display_title}**"
     post_poster = await get_poster(first_info['batch_title'], first_info['year']) if user.get('show_poster', True) else None
     
+    # This is the crucial part: It correctly creates URL buttons.
     footer_buttons = user.get('footer_buttons', [])
-    footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], btn['url'])] for btn in footer_buttons]) if footer_buttons else None
+    footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], url=btn['url'])] for btn in footer_buttons]) if footer_buttons else None
     
     header_line, footer_line = "▰▱▰▱▰▱▰▱▰▱▰▱▰▱▰▱", "\n\n" + "•·•·•·•·•·•·•·•·•·••·•·•·•·•·•·•·•"
     CAPTION_LIMIT = PHOTO_CAPTION_LIMIT if post_poster else TEXT_MESSAGE_LIMIT
