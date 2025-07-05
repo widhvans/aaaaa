@@ -5,7 +5,7 @@ import aiohttp
 from pyrogram import Client, filters, enums
 from pyrogram.enums import ParseMode
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
-from pyrogram.errors import MessageNotModified, UserNotParticipant
+from pyrogram.errors import MessageNotModified, UserNotParticipant, ChannelPrivate
 from database.db import (
     get_user, update_user, add_to_list, remove_from_list,
     get_user_file_count, add_footer_button, remove_footer_button,
@@ -617,9 +617,14 @@ async def fsub_and_download_handler(client, query):
             try:
                 member = await client.get_chat_member(channel_id, "me")
                 if member.status not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
-                    raise UserNotParticipant
-            except UserNotParticipant:
-                await safe_edit_message(prompt, "❌ **Permission Denied!**\n\nI am either not a member of this channel, or I am not an admin. Please add me to the channel, grant me admin rights, and try again.", reply_markup=go_back_button(user_id))
+                    raise UserNotParticipant # Re-raise to be caught by the same except block
+            except (UserNotParticipant, ChannelPrivate) as e:
+                logger.error(f"FSub permission check failed for user {user_id}, channel {channel_id}: {e}")
+                await safe_edit_message(prompt, 
+                    "❌ **Permission Denied!**\n\nThe channel is private or I'm not an admin there. "
+                    "Please make sure I am a member of the channel and have been promoted to an admin, then try again.",
+                    reply_markup=go_back_button(user_id)
+                )
                 return
 
             await update_user(user_id, key, channel_id)
@@ -654,7 +659,9 @@ async def fsub_and_download_handler(client, query):
         logger.exception("Error in handler")
         if prompt: await safe_edit_message(prompt, text=f"An error occurred: {e}", reply_markup=go_back_button(user_id))
     finally:
-        if response: await response.delete()
+        if response: 
+            try: await response.delete()
+            except: pass
 
 
 @Client.on_callback_query(filters.regex("^set_shortener$"))
