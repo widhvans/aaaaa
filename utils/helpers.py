@@ -64,12 +64,14 @@ async def get_definitive_title_from_imdb(title_from_filename):
             return None, None
             
         movie = results[0]
-        
         imdb_title_raw = movie.get('title')
+        
+        # Stricter similarity check
         similarity = fuzz.token_set_ratio(title_from_filename.lower(), imdb_title_raw.lower())
         
-        if similarity < 85: # Lowered threshold slightly for flexibility
-            logger.warning(f"IMDb mismatch rejected! Original: '{title_from_filename}', IMDb: '{imdb_title_raw}', Similarity: {similarity}%")
+        # If similarity is less than 90, reject the match.
+        if similarity < 90:
+            logger.warning(f"IMDb mismatch REJECTED! Original: '{title_from_filename}', IMDb: '{imdb_title_raw}', Similarity: {similarity}%")
             return None, None
 
         await loop.run_in_executor(None, lambda: ia.update(movie, info=['main']))
@@ -121,7 +123,6 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
             r'\[(\d{1,2})\s+To\s+(\d{1,2})\s+Eps\]',
         ]
         for pattern in episode_patterns:
-            # The new regex now handles 'to' optionally
             match = re.search(pattern, name_for_parsing, re.IGNORECASE)
             if match:
                 start_ep = match.group(1)
@@ -239,13 +240,12 @@ async def create_post(client, user_id, messages, cache: dict):
     for info in media_info_list:
         display_tags_parts = []
         
-        # New logic to format episode string as "ep 01-05"
+        # New logic to format episode string as "EP 01-05"
         if info.get('episode_info'):
             numbers = re.findall(r'\d+', info['episode_info'])
             if numbers:
-                # Format to two digits and join with a hyphen
                 ep_text = '-'.join(f"{int(n):02d}" for n in numbers)
-                display_tags_parts.append(f"ep {ep_text}")
+                display_tags_parts.append(f"EP {ep_text}")
 
         if info.get('quality_tags'):
             display_tags_parts.append(info['quality_tags'])
