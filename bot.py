@@ -56,6 +56,7 @@ class Bot(Client):
         self.waiting_files = {}
         self.last_dashboard_edit_time = {}
         self.imdb_cache = {}
+        self.is_in_flood_wait = False # Global flag for smart timer
         
         self.vps_ip = Config.VPS_IP
         self.vps_port = Config.VPS_PORT
@@ -65,8 +66,11 @@ class Bot(Client):
             try:
                 return await coro(*args, **kwargs)
             except FloodWait as e:
-                logger.warning(f"FloodWait of {e.value}s detected. Sleeping for {e.value + 5}s...")
+                logger.warning(f"FloodWait of {e.value}s detected. Sleeping...")
+                self.is_in_flood_wait = True
                 await asyncio.sleep(e.value + 5)
+                self.is_in_flood_wait = False
+                logger.info("FloodWait sleep finished. Resuming operations.")
             except Exception as e:
                 logger.error(f"An error occurred in send_with_protection: {e}", exc_info=True)
                 return None
@@ -89,6 +93,19 @@ class Bot(Client):
         self.last_dashboard_edit_time[user_id] = time.time()
 
     async def _finalize_collection(self, user_id):
+        # The new "Mind-Blowing" check
+        if self.is_in_flood_wait:
+            logger.warning(f"Finalize_collection for user {user_id} triggered during a flood wait. Rescheduling.")
+            loop = asyncio.get_event_loop()
+            collection_data = self.open_batches.get(user_id, {})
+            if collection_data and collection_data.get('dashboard_message'):
+                 await self.send_with_protection(collection_data['dashboard_message'].edit_text,
+                                                 "⚠️ **Telegram is Throttling...**\n\n"
+                                                 "A FloodWait was detected. The collection window has been automatically extended to ensure all files are received.")
+            # Reschedule the finalization and exit
+            collection_data['timer'] = loop.call_later(20, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
+            return
+
         self.processing_users.add(user_id)
         self.imdb_cache.clear()
         try:
@@ -106,11 +123,9 @@ class Bot(Client):
             if dashboard_msg:
                 await self.send_with_protection(dashboard_msg.edit_text, f"⏳ **Step 1/2:** Analyzing and grouping `{len(messages)}` files...")
 
-            # Concurrently get all canonical info for each file, using the cache
             tasks = [clean_and_parse_filename(getattr(msg, msg.media.value).file_name, self.imdb_cache) for msg in messages]
             file_infos = await asyncio.gather(*tasks)
 
-            # New powerful grouping logic
             logical_batches = {}
             for i, info in enumerate(file_infos):
                 if not info or not info.get("batch_title"):
@@ -121,7 +136,7 @@ class Bot(Client):
                 
                 best_match_key = None
                 highest_similarity = 0
-                SIMILARITY_THRESHOLD = 92 # High threshold for accuracy
+                SIMILARITY_THRESHOLD = 92
 
                 for existing_key in logical_batches.keys():
                     similarity = fuzz.token_set_ratio(current_title, existing_key)
