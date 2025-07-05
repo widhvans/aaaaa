@@ -70,42 +70,61 @@ async def get_definitive_title_from_imdb(title_from_filename):
 
 async def clean_and_parse_filename(name: str, cache: dict = None):
     """
-    Robustly parses filenames, now with caching for IMDb lookups.
+    Robustly parses filenames with aggressive cleaning and caching for IMDb lookups.
     """
-    cleaned_name = re.sub(r'(@|\[@)\S+', '', name)
-    cleaned_name = re.sub(r'\[\s*\w+\s*\]', '', cleaned_name) 
+    original_name = name
     
-    parsed_info = PTN.parse(cleaned_name.replace('.', ' ').replace('_', ' '))
+    # Stage 1: Aggressive pre-cleaning
+    junk_patterns = [
+        r'Sample Video', r'Dual Audio', r'Hindi \+ E\w*', r'Hindi', r'English',
+        r'HDCAM', r'HDTC', 'HDRip', 'BluRay', 'WEB-DL', 'Web-Rip', 'DVDRip',
+        r'\b(1080p|720p|480p)\b'
+    ]
+    for pattern in junk_patterns:
+        name = re.sub(pattern, '', name, flags=re.IGNORECASE)
+
+    name = re.sub(r'(@|\[@)\S+', '', name)
+    name = re.sub(r'\[.*?\]', '', name)
+    name = re.sub(r'\(.*?\)', '', name) # Also remove content in parentheses which often contains junk
+    name = ".".join(original_name.split('.')[:-1]) if '.' in original_name else original_name # Work with name before extension
+    name = name.replace('.', ' ').replace('_', ' ').strip()
+    
+    # Stage 2: Use PTN on a semi-cleaned name
+    parsed_info = PTN.parse(name)
     initial_title = parsed_info.get('title', '').strip()
-    
+
+    # Stage 3: Post-cleaning and year de-duplication
+    initial_title = re.sub(r'^\W*\d+mm\W*', '', initial_title, flags=re.IGNORECASE).strip()
+    all_years = re.findall(r'\b(19[89]\d|20[0-2]\d)\b', original_name)
+    year = all_years[0] if all_years else parsed_info.get('year')
+
     if not initial_title: return None
 
-    # --- IMDb VERIFICATION WITH CACHING ---
+    # Stage 4: IMDb Verification with Caching
     definitive_title, definitive_year = None, None
-    if cache is not None and initial_title in cache:
-        definitive_title, definitive_year = cache[initial_title]
-        logger.info(f"IMDb CACHE HIT for '{initial_title}'")
+    cache_key = f"{initial_title}_{year}" if year else initial_title
+    if cache is not None and cache_key in cache:
+        definitive_title, definitive_year = cache[cache_key]
+        logger.info(f"IMDb CACHE HIT for '{cache_key}'")
     else:
-        logger.info(f"IMDb CACHE MISS for '{initial_title}'. Fetching from network...")
-        definitive_title, definitive_year = await get_definitive_title_from_imdb(initial_title)
+        logger.info(f"IMDb CACHE MISS for '{cache_key}'. Fetching from network...")
+        definitive_title, definitive_year = await get_definitive_title_from_imdb(f"{initial_title} {year}" if year else initial_title)
         if cache is not None:
-            cache[initial_title] = (definitive_title, definitive_year)
+            cache[cache_key] = (definitive_title, definitive_year)
 
     final_title = definitive_title if definitive_title else initial_title
-    final_year = definitive_year if definitive_year else parsed_info.get('year')
+    final_year = definitive_year if definitive_year else year
     season = parsed_info.get('season')
     
     episode_info_str = ""
-    search_name = name.replace('.', ' ').replace('_', ' ')
+    search_name = original_name.replace('.', ' ').replace('_', ' ')
     episode_match = re.search(
         r'[Ee](?:p(?:isode)?)?\.?\s*(\d+)(?:\s*(?:-|to)\s*[Ee]?(?:p(?:isode)?)?\.?\s*(\d+))?',
         search_name, re.IGNORECASE
     )
     if episode_match:
         start_ep = int(episode_match.group(1))
-        if 1900 < start_ep < 2100 and not season:
-             if not final_year: final_year = start_ep
-        else:
+        if not (1900 < start_ep < 2100 and not season):
             episode_info_str = f"E{start_ep:02d}"
             if episode_match.group(2): episode_info_str += f"-E{int(episode_match.group(2)):02d}"
     elif parsed_info.get('episode'):
@@ -134,7 +153,6 @@ async def create_post(client, user_id, messages, cache: dict):
     if not user: return []
 
     media_info_list = []
-    # Use asyncio.gather to parse all filenames concurrently, passing the cache
     parse_tasks = [clean_and_parse_filename(getattr(m, m.media.value, None).file_name, cache) for m in messages if getattr(m, m.media.value, None)]
     parsed_results = await asyncio.gather(*parse_tasks)
 
@@ -177,9 +195,11 @@ async def create_post(client, user_id, messages, cache: dict):
     for entry in all_link_entries:
         if current_length + len(entry) + 2 > CAPTION_LIMIT and current_links_part:
             final_posts.append((post_poster if not final_posts else None, f"{base_caption}\n\n" + "\n\n".join(current_links_part) + footer_line, footer_keyboard))
-            current_links_part = []
-        current_links_part.append(entry)
-        current_length = len(base_caption) + len(footer_line) + sum(len(p) + 2 for p in current_links_part)
+            current_links_part = [entry]
+            current_length = len(base_caption) + len(footer_line) + len(entry) + 2
+        else:
+            current_links_part.append(entry)
+            current_length += len(entry) + 2
             
     if current_links_part:
         final_posts.append((post_poster if not final_posts else None, f"{base_caption}\n\n" + "\n\n".join(current_links_part) + footer_line, footer_keyboard))
