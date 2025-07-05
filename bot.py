@@ -137,7 +137,7 @@ class Bot(Client):
                 
                 best_match_key = None
                 highest_similarity = 0
-                SIMILARITY_THRESHOLD = 92
+                SIMILARITY_THRESHOLD = 85 # Lowered for more flexible batching
 
                 for existing_key in logical_batches.keys():
                     similarity = fuzz.token_set_ratio(current_title, existing_key)
