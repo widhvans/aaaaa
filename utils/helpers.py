@@ -55,7 +55,8 @@ def format_bytes(size):
 
 async def get_definitive_title_from_imdb(title_from_filename):
     """
-    Uses the cinemagoer library to find the official title and year from IMDb.
+    Uses the cinemagoer library to find the official title and year from IMDb,
+    with a new "reality check" to prevent mismatches.
     """
     if not title_from_filename:
         return None, None
@@ -67,16 +68,18 @@ async def get_definitive_title_from_imdb(title_from_filename):
             return None, None
             
         movie = results[0]
+        
+        imdb_title_raw = movie.get('title')
+        similarity = fuzz.token_set_ratio(title_from_filename.lower(), imdb_title_raw.lower())
+        
+        if similarity < 85:
+            logger.warning(f"IMDb mismatch rejected! Original: '{title_from_filename}', IMDb: '{imdb_title_raw}', Similarity: {similarity}%")
+            return None, None
+
         await loop.run_in_executor(None, lambda: ia.update(movie, info=['main']))
         
         imdb_title = movie.get('title')
         imdb_year = movie.get('year')
-        
-        similarity = fuzz.token_sort_ratio(title_from_filename.lower(), imdb_title.lower())
-        
-        if similarity < 50:
-            return None, None
-            
         return imdb_title, imdb_year
 
     except Exception as e:
@@ -88,18 +91,26 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     A next-gen, multi-pass robust filename parser that preserves all metadata.
     """
     original_name = name
+    episode_info_str = ""
 
-    # --- PASS 1: Parse First, Clean Later ---
-    # Do a light cleaning for PTN, but keep brackets for episode ranges.
+    # --- PASS 1: Manual Extraction of Complex Patterns (like Episode Ranges) ---
+    range_match = re.search(
+        r'[\[\(\s][Ee](?:p(?:isode)?)?\.?\s*(\d+)\s*-\s*[Ee]?\.?\s*(\d+)[\]\)\s]',
+        name, re.IGNORECASE
+    )
+    if range_match:
+        start_ep, end_ep = int(range_match.group(1)), int(range_match.group(2))
+        episode_info_str = f"E{start_ep:02d}-E{end_ep:02d}"
+        name = name.replace(range_match.group(0), ' ')
+
+    # --- PASS 2: Parse First, Clean Later ---
     ptn_name = name.replace('.', ' ').replace('_', ' ')
     parsed_info = PTN.parse(ptn_name)
 
-    # --- PASS 2: Extract and Safeguard All Metadata ---
+    # --- PASS 3: Extract and Safeguard All Metadata ---
     quality_tags_parts = [
-        parsed_info.get('resolution'),
-        parsed_info.get('quality'),
-        parsed_info.get('codec'),
-        parsed_info.get('audio')
+        parsed_info.get('resolution'), parsed_info.get('quality'),
+        parsed_info.get('codec'), parsed_info.get('audio')
     ]
     quality_tags = " | ".join(filter(None, quality_tags_parts))
     season = parsed_info.get('season')
@@ -107,32 +118,27 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     year = parsed_info.get('year')
     initial_title = parsed_info.get('title', '').strip()
 
-    # --- PASS 3: Aggressively Clean ONLY the Title String ---
+    # --- PASS 4: Aggressively Clean ONLY the Title String ---
     title_to_clean = initial_title
     
-    # Remove year from the title string itself to prevent duplicates
     if year:
         title_to_clean = re.sub(r'\b' + str(year) + r'\b', '', title_to_clean)
 
-    # Remove symbols and merged junk words (e.g., VegaMovies, ExtraFlix)
     title_to_clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', title_to_clean)
     title_to_clean = re.sub(r'[#@$%&~+]', '', title_to_clean)
-    title_to_clean = re.sub(r'「.*?」', '', title_to_clean)
+    title_to_clean = re.sub(r'「.*?」', '', title_to_clean) 
     merged_junk_substrings = ['flix', 'movie', 'movies', 'moviez', 'filmy', 'movieshub']
     merged_junk_re = r'\b\w*(' + r'|'.join(merged_junk_substrings) + r')\w*\b'
     title_to_clean = re.sub(merged_junk_re, '', title_to_clean, flags=re.IGNORECASE)
     
-    # Remove standard junk words (whole words only) from the title
     junk_words = [
         r'\d+Kbps', 'www', 'UNCUT', 'ORG', 'HQ', 'ESubs', 'MSubs', 'REMASTERED', 'REPACK',
         'PROPER', 'iNTERNAL', 'Sample', 'Video', 'Dual', 'Audio', 'Multi', 'Hollywood',
-        'New', 'Episode', 'Combined', 'Complete', 'Chapter', 'PSA', 'JC', 'DIDAR', 'StarBoy',
+        'New', 'Episode', 'Episodes', 'Combined', 'Complete', 'Chapter', 'PSA', 'JC', 'DIDAR', 'StarBoy',
         'Hindi', 'English', 'Tamil', 'Telugu', 'Kannada', 'Malayalam', 'Punjabi', 'Japanese', 'Korean',
-        'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5',
-        '1080p', '720p', '576p', '480p', '360p', '240p', '4k', '3D',
-        'x264', 'x265', 'h264', 'h265', '10bit', 'HEVC',
-        'HDCAM', 'HDTC', 'HDRip', 'BluRay', 'WEB-DL', 'Web-Rip', 'DVDRip', 'BDRip',
-        'DTS', 'AAC', 'AC3', 'E-AC-3', 'E-AC3', 'DD', 'DDP', 'HE-AAC'
+        'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5', '1080p', '720p', '576p', '480p', '360p', '240p', '4k', '3D',
+        'x264', 'x265', 'h264', 'h265', '10bit', 'HEVC', 'HDCAM', 'HDTC', 'HDRip', 'BluRay', 'WEB-DL', 
+        'Web-Rip', 'DVDRip', 'BDRip', 'DTS', 'AAC', 'AC3', 'E-AC-3', 'E-AC3', 'DD', 'DDP', 'HE-AAC'
     ]
     junk_pattern_re = r'\b(' + r'|'.join(junk_words) + r')\b'
     cleaned_title = re.sub(junk_pattern_re, '', title_to_clean, flags=re.IGNORECASE)
@@ -149,7 +155,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
 
     if not cleaned_title: cleaned_title = initial_title
 
-    # --- PASS 4: IMDb Verification ---
+    # --- PASS 5: IMDb Verification (with Caching) ---
     if not year:
         found_years = re.findall(r'\b(19[89]\d|20[0-2]\d)\b', original_name)
         if found_years: year = found_years[0]
@@ -158,22 +164,23 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     cache_key = f"{cleaned_title}_{year}" if year else cleaned_title
     if cache is not None and cache_key in cache:
         definitive_title, definitive_year = cache[cache_key]
+        logger.info(f"IMDb CACHE HIT for '{cache_key}'")
     else:
-        definitive_title, definitive_year = await get_definitive_title_from_imdb(f"{cleaned_title} {year}" if year else cleaned_title)
+        logger.info(f"IMDb CACHE MISS for '{cache_key}'. Fetching from network...")
+        definitive_title, definitive_year = await get_definitive_title_from_imdb(cleaned_title)
         if cache is not None:
             cache[cache_key] = (definitive_title, definitive_year)
 
-    # --- PASS 5: Reconstruct and Return ---
+    # --- PASS 6: Reconstruct and Return ---
     final_title = definitive_title if definitive_title else cleaned_title
     final_year = definitive_year if definitive_year else year
     
-    # Format episode range correctly
-    episode_info_str = ""
-    if episode:
+    # Final episode formatting, prioritizing the manually found range
+    if not episode_info_str and episode:
         if isinstance(episode, list):
             if len(episode) > 1:
                 episode_info_str = f"E{min(episode):02d}-E{max(episode):02d}"
-            else:
+            elif episode:
                 episode_info_str = f"E{episode[0]:02d}"
         else:
             episode_info_str = f"E{episode:02d}"
