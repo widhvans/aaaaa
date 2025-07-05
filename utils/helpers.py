@@ -171,6 +171,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
             elif episode: episode_info_str = f"E{episode[0]:02d}"
         else: episode_info_str = f"E{episode:02d}"
     
+    # **FINAL FIX**: The year from the filename is the ONLY source of truth for the year.
     year_from_filename = parsed_info.get('year')
 
     # --- PASS 5: Aggressive Title Cleaning on the result of PTN ---
@@ -198,25 +199,12 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     
     if not cleaned_title: cleaned_title = " ".join(original_name.split('.')[:-1])
 
-    # --- PASS 6: IMDb Verification (with Caching) ---
-    if not year_from_filename:
-        found_years = re.findall(r'\b(19\d{2}|20\d{2})\b', original_name)
-        if found_years: year_from_filename = int(found_years[0])
-        
-    definitive_title, definitive_year_from_imdb = None, None
-    cache_key = f"{cleaned_title}_{year_from_filename}" if year_from_filename else cleaned_title
-    if cache is not None and cache_key in cache:
-        definitive_title, definitive_year_from_imdb = cache[cache_key]
-        logger.info(f"IMDb CACHE HIT for '{cache_key}'")
-    else:
-        definitive_title, definitive_year_from_imdb = await get_definitive_title_from_imdb(cleaned_title)
-        if cache is not None:
-            cache[cache_key] = (definitive_title, definitive_year_from_imdb)
+    # --- PASS 6: IMDb Verification (for title only) ---
+    definitive_title, _ = await get_definitive_title_from_imdb(cleaned_title)
 
     # --- PASS 7: Reconstruct and Return ---
     final_title = definitive_title if definitive_title else cleaned_title.title()
-    # **FINAL FIX**: Prioritize year from the filename. Fallback to IMDb only if no year is found.
-    final_year = year_from_filename if year_from_filename else definitive_year_from_imdb
+    final_year = year_from_filename  # Use ONLY the year from the filename
     is_series = bool(season_info_str or episode_info_str)
 
     display_title = final_title.strip()
