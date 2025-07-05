@@ -96,10 +96,8 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
 
     # --- PASS 2: Extract All Possible Metadata ---
     quality_tags_parts = [
-        parsed_info.get('resolution'),
-        parsed_info.get('quality'),
-        parsed_info.get('codec'),
-        parsed_info.get('audio')
+        parsed_info.get('resolution'), parsed_info.get('quality'),
+        parsed_info.get('codec'), parsed_info.get('audio')
     ]
     quality_tags = " | ".join(filter(None, quality_tags_parts))
     season = parsed_info.get('season')
@@ -110,15 +108,25 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     # --- PASS 3: Aggressively Clean ONLY the Title String ---
     title_to_clean = initial_title
     
+    # Remove year from the title string itself to prevent duplicates like "Title 2023 (2023)"
+    if year:
+        title_to_clean = re.sub(r'\b' + str(year) + r'\b', '', title_to_clean)
+
     title_to_clean = re.sub(r'[#@$%&~+]', '', title_to_clean)
     title_to_clean = re.sub(r'「.*?」', '', title_to_clean) 
     
-    junk_patterns = [
-        r'\d+Kbps',
+    # Remove "merged" junk words (e.g., VegaMovies, ExtraFlix)
+    merged_junk_substrings = ['flix', 'movie', 'movies', 'moviez', 'filmy', 'movieshub']
+    merged_junk_re = r'\b\w*(' + r'|'.join(merged_junk_substrings) + r')\w*\b'
+    title_to_clean = re.sub(merged_junk_re, '', title_to_clean, flags=re.IGNORECASE)
+
+    # Remove standard junk words (whole words only)
+    junk_words = [
+        r'\d+Kbps', 'www',
         'UNCUT', 'ORG', 'HQ', 'ESubs', 'MSubs', 'REMASTERED', 'REPACK', 'PROPER', 'iNTERNAL',
-        'Sample', 'Video', 'Dual', 'Audio', 'Multi', 'Hollywood', 'Movie', 'New', 'Episode',
+        'Sample', 'Video', 'Dual', 'Audio', 'Multi', 'Hollywood', 'New', 'Episode',
         'Combined', 'Complete', 'Chapter',
-        'PSA', 'JC', 'DIDAR', 'StarBoy', 'ClipmateMovies', 'OTT_Downloader_Bot', 'OTT_WebdlBot', 'MAPOriginals',
+        'PSA', 'JC', 'DIDAR', 'StarBoy',
         'Hindi', 'English', 'Tamil', 'Telugu', 'Kannada', 'Malayalam', 'Punjabi', 'Japanese', 'Korean',
         'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5',
         '1080p', '720p', '576p', '480p', '360p', '240p', '4k', '3D',
@@ -126,8 +134,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
         'HDCAM', 'HDTC', 'HDRip', 'BluRay', 'WEB-DL', 'Web-Rip', 'DVDRip', 'BDRip',
         'DTS', 'AAC', 'AC3', 'E-AC-3', 'E-AC3', 'DD', 'DDP', 'HE-AAC'
     ]
-    junk_pattern_re = r'\b(' + r'|'.join(junk_patterns) + r')\b'
-    # The `repl` argument '' was missing here. This is the fix.
+    junk_pattern_re = r'\b(' + r'|'.join(junk_words) + r')\b'
     cleaned_title = re.sub(junk_pattern_re, '', title_to_clean, flags=re.IGNORECASE)
 
     date_pattern = r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)[\s,]*\d{1,2}[\s,]*\d{4}\b'
@@ -166,7 +173,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
         else: episode_info_str = f"E{episode:02d}"
         
     is_series = season is not None or episode_info_str != ""
-    display_title = f"{final_title}" + (f" ({final_year})" if final_year else "")
+    display_title = f"{final_title.strip()}" + (f" ({final_year})" if final_year else "")
         
     return {
         "batch_title": f"{final_title} S{season:02d}" if is_series and season else final_title,
