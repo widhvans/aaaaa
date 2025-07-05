@@ -58,7 +58,6 @@ async def get_definitive_title_from_imdb(title_from_filename):
         return None, None
     try:
         loop = asyncio.get_event_loop()
-        # Use a lambda to run the synchronous search_movie in an executor
         results = await loop.run_in_executor(None, lambda: ia.search_movie(title_from_filename, results=1))
         
         if not results:
@@ -67,15 +66,12 @@ async def get_definitive_title_from_imdb(title_from_filename):
         movie = results[0]
         
         imdb_title_raw = movie.get('title')
-        # Use a more flexible ratio for matching to account for variations
         similarity = fuzz.token_set_ratio(title_from_filename.lower(), imdb_title_raw.lower())
         
-        # Lowered threshold to 80 for more flexibility with slightly different titles
-        if similarity < 80:
+        if similarity < 85: # Lowered threshold slightly for flexibility
             logger.warning(f"IMDb mismatch rejected! Original: '{title_from_filename}', IMDb: '{imdb_title_raw}', Similarity: {similarity}%")
             return None, None
 
-        # Use a lambda to run the synchronous update in an executor
         await loop.run_in_executor(None, lambda: ia.update(movie, info=['main']))
         
         imdb_title = movie.get('title')
@@ -91,48 +87,52 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     A next-gen, multi-pass robust filename parser that preserves all metadata.
     """
     original_name = name
-    # Normalize separators early
     name_for_parsing = name.replace('_', ' ').replace('.', ' ')
 
     season_info_str = ""
     episode_info_str = ""
 
-    # --- PASS 1: More Robust Season/Episode Parsing ---
-    # This single, powerful regex aims to capture most S/E formats, including ranges.
-    # It looks for S(xx) followed by E(xx), with optional range E(yy).
-    series_pattern = re.compile(
-        r'\b(S|Season)\s*(\d{1,2})\s*(?:EP?|E|\[)\s*(\d{1,4})(?:\s*(?:[-–—]|to|_)\s*(\d{1,4}))?',
-        re.IGNORECASE
-    )
-    series_match = series_pattern.search(name_for_parsing)
-    
-    if series_match:
-        season_info_str = f"S{int(series_match.group(2)):02d}"
-        start_ep = int(series_match.group(3))
-        if series_match.group(4): # If an end episode exists
-            end_ep = int(series_match.group(4))
-            episode_info_str = f"E{start_ep:02d}-E{end_ep:02d}"
-        else:
-            episode_info_str = f"E{start_ep:02d}"
-        # Remove the found series pattern from the string to help clean the title
-        name_for_parsing = series_pattern.sub(' ', name_for_parsing)
+    # --- PASS 1: High-confidence combined Season/Episode patterns ---
+    combined_patterns = {
+        r'\bS(\d{1,2})\s*EP?(\d{1,4})\s*[-–—\s]*EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
+        r'\bS(\d{1,2})\s*EP?(\d{1,4})\s+to\s+EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
+        r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s*[-–—]\s*E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
+        r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s+to\s+E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
+    }
+    for pattern, groups in combined_patterns.items():
+        match = re.search(pattern, name_for_parsing, re.IGNORECASE)
+        if match:
+            season_info_str = f"S{int(match.group(1)):02d}"
+            episode_info_str = f"E{int(match.group(2)):02d}-E{int(match.group(3)):02d}"
+            name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
+            break
 
-    # --- PASS 2: Fallback for Episode-Only Ranges (e.g., [09 To 12 Eps]) ---
+    # --- PASS 2: Independent Season and Episode patterns ---
+    if not season_info_str:
+        season_match = re.search(r'\b(S|Season)\s*(\d{1,2})\b', name_for_parsing, re.IGNORECASE)
+        if season_match:
+            season_info_str = f"S{int(season_match.group(2)):02d}"
+            name_for_parsing = name_for_parsing.replace(season_match.group(0), ' ', 1)
+
     if not episode_info_str:
-        # This regex specifically looks for bracketed or standalone episode ranges
-        episode_range_pattern = re.compile(
-            r'\[?\s*(?:E|EP|EPS)\s*?(\d{1,2})\s*(?:To|-)\s*(\d{1,2})\s*Eps?\]?',
-            re.IGNORECASE
-        )
-        ep_range_match = episode_range_pattern.search(name_for_parsing)
-        if ep_range_match:
-            start_ep = int(ep_range_match.group(1))
-            end_ep = int(ep_range_match.group(2))
-            episode_info_str = f"E{start_ep:02d}-E{end_ep:02d}"
-            name_for_parsing = episode_range_pattern.sub(' ', name_for_parsing)
+        episode_patterns = [
+            r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\s*\]',
+            r'\b(?:E|EP|Ep|Episode)s?[\. ]?\s*(\d{1,4})\s*[-–—\s]?\s*(to)?\s*(\d{1,4})\b',
+            r'\[(\d{1,2})\s+To\s+(\d{1,2})\s+Eps\]',
+        ]
+        for pattern in episode_patterns:
+            # The new regex now handles 'to' optionally
+            match = re.search(pattern, name_for_parsing, re.IGNORECASE)
+            if match:
+                start_ep = match.group(1)
+                end_ep = match.group(3) # Group 3 will be the end episode
+                episode_info_str = f"E{int(start_ep):02d}-E{int(end_ep):02d}"
+                name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
+                break
 
-    # --- PASS 3: PTN for Fallback and Technical Metadata ---
-    parsed_info = PTN.parse(name_for_parsing)
+    # --- PASS 3: PTN as a fallback ---
+    ptn_name = name_for_parsing.replace('.', ' ').replace('_', ' ')
+    parsed_info = PTN.parse(ptn_name)
     
     initial_title = parsed_info.get('title', '').strip()
     if not season_info_str and parsed_info.get('season'):
@@ -140,54 +140,44 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     if not episode_info_str and parsed_info.get('episode'):
         episode = parsed_info.get('episode')
         if isinstance(episode, list):
-            episode_info_str = f"E{min(episode):02d}-E{max(episode):02d}" if len(episode) > 1 else f"E{episode[0]:02d}"
-        else:
-            episode_info_str = f"E{episode:02d}"
+            if len(episode) > 1: episode_info_str = f"E{min(episode):02d}-E{max(episode):02d}"
+            elif episode: episode_info_str = f"E{episode[0]:02d}"
+        else: episode_info_str = f"E{episode:02d}"
     
     year = parsed_info.get('year')
 
-    # --- PASS 4: More Careful Title Cleaning ---
-    # The goal here is to remove technical terms, not potential title words.
+    # --- PASS 4: Aggressive Title Cleaning ---
     title_to_clean = initial_title
     
-    # Remove the year from the title string if found
     if year:
         title_to_clean = re.sub(r'\b' + str(year) + r'\b', '', title_to_clean)
 
-    # Remove any remaining S/E tags that might have been missed
     title_to_clean = re.sub(r'\bS\d{1,2}\b|\bE\d{1,4}\b', '', title_to_clean, flags=re.IGNORECASE)
-    
-    # Remove bracketed content, as it's usually metadata
     title_to_clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', title_to_clean)
     
-    # A more targeted list of technical/release junk words
     junk_words = [
-        'Dual Audio', 'Hindi', 'English', 'Tamil', 'Telugu', 'Kannada', 'Malayalam',
-        'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5', 'WEB-DL', 'HDRip', 'WEBRip', 'HEVC', 
-        'x265', 'x264', 'AAC', '10bit', '720p', '1080p', '480p', '2160p', '4K',
-        'MSubs', 'ESubs', 'REMASTERED', 'REPACK', 'PROPER', 'UNCUT'
+        'Ep', 'Eps', 'Episode', 'Episodes', 'Season', 'Series', 'South', 'Dubbed', 'Completed',
+        'Web', r'\d+Kbps', 'www', 'UNCUT', 'ORG', 'HQ', 'ESubs', 'MSubs', 'REMASTERED', 'REPACK',
+        'PROPER', 'iNTERNAL', 'Sample', 'Video', 'Dual', 'Audio', 'Multi', 'Hollywood',
+        'New', 'Combined', 'Complete', 'Chapter', 'PSA', 'JC', 'DIDAR', 'StarBoy',
+        'Hindi', 'English', 'Tamil', 'Telugu', 'Kannada', 'Malayalam', 'Punjabi', 'Japanese', 'Korean',
+        'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5', 'WEB-DL', 'HDRip', 'WEBRip', 'HEVC', 'x265', 'x264', 'AAC'
     ]
     junk_pattern_re = r'\b(' + r'|'.join(junk_words) + r')\b'
     cleaned_title = re.sub(junk_pattern_re, '', title_to_clean, flags=re.IGNORECASE)
     
-    # Remove any standalone numbers (likely resolution/bitrate)
-    cleaned_title = re.sub(r'\b\d{3,4}\b', '', cleaned_title)
-    # Final cleanup of multiple spaces
+    cleaned_title = re.sub(r'\b\d{1,4}\b', '', cleaned_title)
     cleaned_title = re.sub(r'\s+', ' ', cleaned_title).strip()
 
-    # If cleaning results in an empty string, fall back to a simpler clean of the original name
-    if not cleaned_title:
-        cleaned_title = " ".join(original_name.split('.')[:-1])
+    if not cleaned_title: cleaned_title = " ".join(original_name.split('.')[:-1])
 
     # --- PASS 5: IMDb Verification (with Caching) ---
     if not year:
-        # A safer way to find the year from the original name
-        found_years = re.findall(r'\b(19[89]\d|20[0-2]\d)\b', original_name)
-        if found_years: year = found_years[-1] # Take the last found year, often more accurate
+        found_years = re.findall(r'\b(19[89]\d|20[0-3]\d)\b', original_name)
+        if found_years: year = found_years[0]
         
     definitive_title, definitive_year = None, None
     cache_key = f"{cleaned_title}_{year}" if year else cleaned_title
-    
     if cache is not None and cache_key in cache:
         definitive_title, definitive_year = cache[cache_key]
         logger.info(f"IMDb CACHE HIT for '{cache_key}'")
@@ -201,7 +191,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     final_title = definitive_title if definitive_title else cleaned_title.title()
     final_year = definitive_year if definitive_year else year
     
-    is_series = bool(season_info_str or episode_info_str)
+    is_series = season_info_str != "" or episode_info_str != ""
 
     display_title = f"{final_title.strip()}" + (f" ({final_year})" if final_year else "")
         
@@ -214,7 +204,6 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
         "episode_info": episode_info_str,
         "quality_tags": " | ".join(filter(None, [parsed_info.get('resolution'), parsed_info.get('quality'), parsed_info.get('codec'), parsed_info.get('audio')]))
     }
-
 
 async def create_post(client, user_id, messages, cache: dict):
     user = await get_user(user_id)
@@ -250,12 +239,13 @@ async def create_post(client, user_id, messages, cache: dict):
     for info in media_info_list:
         display_tags_parts = []
         
-        # Corrected logic to format episode string and capitalize "EP"
+        # New logic to format episode string as "ep 01-05"
         if info.get('episode_info'):
             numbers = re.findall(r'\d+', info['episode_info'])
             if numbers:
+                # Format to two digits and join with a hyphen
                 ep_text = '-'.join(f"{int(n):02d}" for n in numbers)
-                display_tags_parts.append(f"EP {ep_text}")
+                display_tags_parts.append(f"ep {ep_text}")
 
         if info.get('quality_tags'):
             display_tags_parts.append(info['quality_tags'])
