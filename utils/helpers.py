@@ -87,7 +87,8 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     A next-gen, multi-pass robust filename parser that preserves all metadata.
     """
     original_name = name
-    name_for_parsing = name
+    # PASS 0: Normalize separators for more reliable regex.
+    name_for_parsing = name.replace('.', ' ').replace('_', ' ')
     episode_info_str = ""
     season_info_str = ""
 
@@ -97,25 +98,39 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
         # Format: [E01-E03], [E01 - E03], [01-03]
         r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\s*\]',
         # Format: [E01 to E03], [EP 01 TO 03], [09 To 12 Eps]
-        r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*to\s*(\d{1,4})\s*Eps?\]',
-        # Format: E01-E03, Ep.01-05, S01EP01-05 (handles Ep. with or without space/dot)
-        r'\b(?:E|EP|Ep|Episode)[\. ]?\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\b',
+        r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*to\s*(\d{1,4})\s*(?:Eps)?\s*\]',
+        # Format: Ep.01-05, EP 01-05, E01-05, Episode 01-05 (now works on pre-cleaned name)
+        r'\b(?:E|EP|Ep|Episode)s?[\. ]?\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\b',
+        # Format: S01EP01-05
+        r'\bS(\d{1,2})\s*EP(\d{1,4})\s*[-–—]\s*EP?(\d{1,4})\b',
     ]
+    
     for pattern in range_patterns:
         range_match = re.search(pattern, name_for_parsing, re.IGNORECASE)
         if range_match:
-            start_ep, end_ep = int(range_match.group(1)), int(range_match.group(2))
-            episode_info_str = f"E{start_ep:02d}-E{end_ep:02d}"
-            name_for_parsing = name_for_parsing.replace(range_match.group(0), ' ', 1)
-            break
+            groups = range_match.groups()
+            if 'EP' in pattern and 'S' in pattern: # For S01EP01-EP05 pattern
+                season_info_str = f"S{int(groups[0]):02d}"
+                start_ep, end_ep = int(groups[1]), int(groups[2])
+            else:
+                start_ep, end_ep = int(groups[0]), int(groups[1])
             
-    season_match = re.search(r'\bS(\d{1,2})\b', name_for_parsing, re.IGNORECASE)
-    if season_match:
-        season_info_str = f"S{int(season_match.group(1)):02d}"
+            episode_info_str = f"E{start_ep:02d}-E{end_ep:02d}"
+            # Remove the matched part from the string to prevent it from being part of the title
+            name_for_parsing = name_for_parsing.replace(range_match.group(0), ' ', 1)
+            break # Stop after the first successful match
+    
+    # Season matching (if not found in a complex pattern already)
+    if not season_info_str:
+        season_match = re.search(r'\bS(\d{1,2})\b', name_for_parsing, re.IGNORECASE)
+        if season_match:
+            season_info_str = f"S{int(season_match.group(1)):02d}"
+            # Also remove the season string from the name to avoid it appearing in the title
+            name_for_parsing = name_for_parsing.replace(season_match.group(0), ' ', 1)
 
     # --- PASS 2: Parse with PTN ---
-    ptn_name = name_for_parsing.replace('.', ' ').replace('_', ' ')
-    parsed_info = PTN.parse(ptn_name)
+    # The name is already cleaner now
+    parsed_info = PTN.parse(name_for_parsing)
 
     # --- PASS 3: Extract and Safeguard All Metadata ---
     quality_tags_parts = [
@@ -123,6 +138,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
         parsed_info.get('codec'), parsed_info.get('audio')
     ]
     quality_tags = " | ".join(filter(None, quality_tags_parts))
+    # Use season/episode from PTN only if our manual search found nothing
     season = parsed_info.get('season')
     episode = parsed_info.get('episode')
     year = parsed_info.get('year')
@@ -142,6 +158,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     title_to_clean = re.sub(merged_junk_re, '', title_to_clean, flags=re.IGNORECASE)
     
     junk_words = [
+        'Ep', 'Eps',
         r'\d+Kbps', 'www', 'UNCUT', 'ORG', 'HQ', 'ESubs', 'MSubs', 'REMASTERED', 'REPACK',
         'PROPER', 'iNTERNAL', 'Sample', 'Video', 'Dual', 'Audio', 'Multi', 'Hollywood',
         'New', 'Episode', 'Episodes', 'Combined', 'Complete', 'Chapter', 'PSA', 'JC', 'DIDAR', 'StarBoy',
@@ -183,7 +200,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     final_title = definitive_title if definitive_title else cleaned_title
     final_year = definitive_year if definitive_year else year
     
-    # Final episode formatting, prioritizing the manually found range
+    # Final episode formatting, prioritizing the manually found range, then PTN
     if not episode_info_str and episode:
         if isinstance(episode, list):
             if len(episode) > 1:
@@ -192,10 +209,12 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
                 episode_info_str = f"E{episode[0]:02d}"
         else:
             episode_info_str = f"E{episode:02d}"
-            
-    is_series = season is not None or episode_info_str != ""
+    
+    # Final season formatting, prioritizing manual/complex find, then PTN
     if not season_info_str and season:
         season_info_str = f"S{int(season):02d}"
+
+    is_series = season_info_str != "" or episode_info_str != ""
 
     display_title = f"{final_title.strip()}" + (f" ({final_year})" if final_year else "")
         
@@ -242,8 +261,13 @@ async def create_post(client, user_id, messages, cache: dict):
     all_link_entries = []
     for info in media_info_list:
         display_tags_parts = []
-        if info['is_series'] and info['episode_info']: display_tags_parts.append(info['episode_info'])
-        if info['quality_tags']: display_tags_parts.append(info['quality_tags'])
+        if info.get('season_info'): 
+            display_tags_parts.append(info['season_info'])
+        if info.get('episode_info'): 
+            display_tags_parts.append(info['episode_info'])
+        if info.get('quality_tags'): 
+            display_tags_parts.append(info['quality_tags'])
+        
         display_tags = " | ".join(filter(None, display_tags_parts))
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{user_id}_{info['file_unique_id']}"
         file_size_str = format_bytes(info['file_size'])
