@@ -85,57 +85,74 @@ async def get_definitive_title_from_imdb(title_from_filename):
 
 async def clean_and_parse_filename(name: str, cache: dict = None):
     """
-    Robustly parses filenames with aggressive cleaning and caching for IMDb lookups.
+    A next-gen, multi-pass robust filename parser.
     """
     original_name = name
 
-    # Stage 1: Initial Standard Cleaning
-    # Work with name before extension and replace separators
+    # --- PASS 1: Pre-Normalization and Heavy Junk Removal ---
+    # Work with name before extension
     name = ".".join(name.split('.')[:-1]) if '.' in name else name
-    name = name.replace('.', ' ').replace('_', ' ').strip()
-    
-    # Stage 2: Aggressive Junk Removal
-    # Remove all content within brackets: (), [], {}
+    # Aggressively remove all content within brackets: (), [], {}
     name = re.sub(r'[\(\[\{].*?[\)\]\}]', '', name)
-    
-    # Remove common symbols and tags, but keep the text
-    name = re.sub(r'[#@$%&_+]', '', name)
+    # Replace common separators with spaces
+    name = name.replace('.', ' ').replace('_', ' ').strip()
+    # Remove common symbols and channel-like tags
+    name = re.sub(r'[#@$%&~]', '', name)
+    name = re.sub(r'「.*?」', '', name) # For special brackets
 
-    # Remove junk keywords using word boundaries for safety
+    # --- PASS 2: Regex-based Keyword Junk Removal ---
     junk_words = [
-        'Sample', 'Video', 'Dual', 'Audio', 'Hollywood', 'Movie', 'Punjabi',
-        'Hindi', 'English', 'Tamil', 'Telugu', 'Kannada', 'Malayalam',
-        'NF', 'AMZN', 'MAX', 'DSNP',
-        '1080p', '720p', '480p', '4k', '3D',
+        'UNCUT', 'ORG', 'HQ', 'ESubs', 'MSubs', 'REMASTERED', 'REPACK', 'PROPER', 'iNTERNAL',
+        'Sample', 'Video', 'Dual', 'Audio', 'Multi', 'Hollywood', 'Movie', 'New', 'Episode',
+        'Combined', 'Complete', 'Chapter',
+        'PSA', 'JC', 'DIDAR', 'StarBoy', 'ClipmateMovies', 'OTT_Downloader_Bot', 'OTT_WebdlBot', 'MAPOriginals',
+        'Hindi', 'English', 'Tamil', 'Telugu', 'Kannada', 'Malayalam', 'Punjabi', 'Japanese', 'Korean',
+        'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5',
+        '1080p', '720p', '576p', '480p', '360p', '240p', '4k', '3D',
         'x264', 'x265', 'h264', 'h265', '10bit', 'HEVC',
         'HDCAM', 'HDTC', 'HDRip', 'BluRay', 'WEB-DL', 'Web-Rip', 'DVDRip', 'BDRip',
-        'DTS', 'AAC', 'AC3',
-        'E-AC-3', 'E-AC3',
-        'O' 
+        'DTS', 'AAC', 'AC3', 'E-AC-3', 'E-AC3', 'DD', 'DDP', 'HE-AAC',
+        'Kbps'
     ]
-    # This regex ensures we only match whole words
+    # This regex ensures we only match whole words (case-insensitive)
     junk_pattern_re = r'\b(' + r'|'.join(junk_words) + r')\b'
     name = re.sub(junk_pattern_re, '', name, flags=re.IGNORECASE)
 
+    # --- PASS 3: Date and Final Cleanup ---
+    # Remove date patterns like "September 11, 2023" or "September 11 2023"
+    date_pattern = r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}\b'
+    name = re.sub(date_pattern, '', name, flags=re.IGNORECASE)
     # Final cleanup of extra spaces
     name = re.sub(r'\s+', ' ', name).strip()
     
-    # Stage 3: Use PTN on the fully cleaned name
+    # --- PASS 4: Intelligent Parsing and De-duplication ---
     parsed_info = PTN.parse(name)
     initial_title = parsed_info.get('title', '').strip()
+    
+    if initial_title:
+        # De-duplicate by splitting the string by the found title and taking the first part.
+        # This handles cases like "Title S01E01 Title" -> "Title S01E01"
+        if name.lower().count(initial_title.lower()) > 1:
+            first_occurrence_index = name.lower().find(initial_title.lower())
+            rest_of_string = name[first_occurrence_index + len(initial_title):]
+            
+            second_occurrence_index = rest_of_string.lower().find(initial_title.lower())
+            if second_occurrence_index != -1:
+                # Cut the string off before the second occurrence of the title
+                name = name[:first_occurrence_index + len(initial_title) + second_occurrence_index]
+                # Re-parse after deduplication
+                parsed_info = PTN.parse(name)
+                initial_title = parsed_info.get('title', '').strip()
 
-    # Stage 4: Post-cleaning and year de-duplication
+    # --- PASS 5: Final Extraction and IMDb Verification ---
     initial_title = re.sub(r'^\W*\d+mm\W*', '', initial_title, flags=re.IGNORECASE).strip()
-    # Use original_name for year finding as cleaning might have removed it
     all_years = re.findall(r'\b(19[89]\d|20[0-2]\d)\b', original_name)
     year = all_years[0] if all_years else parsed_info.get('year')
 
     if not initial_title:
-        # Fallback if cleaning was too aggressive, parse the original name
         initial_title = PTN.parse(original_name).get('title', '')
-        if not initial_title: return None # If still no title, we can't proceed
+        if not initial_title: return None
 
-    # Stage 5: IMDb Verification with Caching
     definitive_title, definitive_year = None, None
     cache_key = f"{initial_title}_{year}" if year else initial_title
     if cache is not None and cache_key in cache:
