@@ -71,6 +71,9 @@ class Bot(Client):
                 await asyncio.sleep(e.value + 5)
                 self.is_in_flood_wait = False
                 logger.info("FloodWait sleep finished. Resuming operations.")
+            except MessageNotModified:
+                logger.warning("Attempted to edit message with the same content.")
+                return None # Continue without error
             except Exception as e:
                 logger.error(f"An error occurred in send_with_protection: {e}", exc_info=True)
                 return None
@@ -81,9 +84,9 @@ class Bot(Client):
         dashboard_msg = await self.send_with_protection(
             self.send_message,
             chat_id=user_id,
-            text=f"**File(s) Detected**\n\n"
+            text=f"**File Batch Detected**\n\n"
                  f"📊 **Files Collected:** `{len(initial_messages)}`\n"
-                 f"⏳ **Status:** Started a 10-second window to collect more files..."
+                 f"⏳ **Status:** Collecting files..."
         )
         self.open_batches[user_id] = {
             'messages': initial_messages,
@@ -95,20 +98,17 @@ class Bot(Client):
     async def _finalize_collection(self, user_id):
         # The dynamic self-aware timer check
         if self.is_in_flood_wait:
-            logger.warning(f"Finalize_collection for user {user_id} triggered during a flood wait. Rescheduling.")
+            logger.warning(f"Finalize_collection for user {user_id} triggered during a flood wait. Rescheduling silently.")
             loop = asyncio.get_event_loop()
             collection_data = self.open_batches.get(user_id, {})
-            if collection_data and collection_data.get('dashboard_message'):
-                 await self.send_with_protection(collection_data['dashboard_message'].edit_text,
-                                                 "⚠️ **Telegram is Throttling...**\n\n"
-                                                 "A FloodWait was detected. The collection window has been automatically extended to ensure all files are received.")
-            # Reschedule the finalization and exit
+            # Silently reschedule without notifying the user to avoid MessageNotModified errors.
             if collection_data:
                 collection_data['timer'] = loop.call_later(10, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
             return
 
         self.processing_users.add(user_id)
         self.imdb_cache.clear()
+        dashboard_msg = None
         try:
             if user_id not in self.open_batches or not self.open_batches[user_id]:
                 return
@@ -151,10 +151,9 @@ class Bot(Client):
                     logical_batches[current_title] = [current_msg]
 
             total_batches = len(logical_batches)
-            estimated_time = total_batches * 8 
             if dashboard_msg:
                 await self.send_with_protection(dashboard_msg.edit_text, f"✅ **Step 1/2 Complete.** Found `{total_batches}` batches.\n\n"
-                                                                      f"⏳ **Step 2/2:** Processing... (Est. Time: ~{estimated_time} seconds)")
+                                                                      f"⏳ **Step 2/2:** Processing all batches...")
             user = await get_user(user_id)
             if not user: return
             
@@ -170,11 +169,9 @@ class Bot(Client):
                 posts_to_send = await create_post(self, user_id, batch_messages, self.imdb_cache)
                 
                 if dashboard_msg:
-                    remaining_eta = (total_batches - processed_count) * 8
                     await self.send_with_protection(dashboard_msg.edit_text, f"**Processing...**\n\n"
-                                                                          f"✅ Batch {processed_count-1}/{total_batches} posted.\n"
-                                                                          f"⏳ Posting batch '{batch_title}'...\n"
-                                                                          f"(Est. remaining: ~{remaining_eta} seconds)")
+                                                                          f"✅ Batch {processed_count - 1}/{total_batches} posted.\n"
+                                                                          f"⏳ Posting batch '{batch_title}'...")
 
                 for post in posts_to_send:
                     poster, caption, footer = post
@@ -233,15 +230,13 @@ class Bot(Client):
                     if (time.time() - last_edit) > DASHBOARD_EDIT_THROTTLE_SECONDS:
                         dashboard_msg = collection_data.get('dashboard_message')
                         if dashboard_msg:
-                            try:
-                               await self.send_with_protection(
-                                   dashboard_msg.edit_text,
-                                   f"**File Detected**\n\n"
-                                   f"📊 **Files Collected:** `{len(collection_data['messages'])}`\n"
-                                   f"⏳ **Status:** Resetting 10-second window to collect more files..."
-                               )
-                               self.last_dashboard_edit_time[user_id] = time.time()
-                            except MessageNotModified: pass
+                           await self.send_with_protection(
+                               dashboard_msg.edit_text,
+                               f"**File Batch Update**\n\n"
+                               f"📊 **Files Collected:** `{len(collection_data['messages'])}`\n"
+                               f"⏳ **Status:** Collecting more files..."
+                           )
+                           self.last_dashboard_edit_time[user_id] = time.time()
                     
                     collection_data['timer'] = loop.call_later(10, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
 
