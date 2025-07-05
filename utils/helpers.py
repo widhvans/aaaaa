@@ -90,14 +90,11 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     original_name = name
 
     # --- PASS 1: Light Cleaning for PTN ---
-    # Just replace separators. Don't remove any keywords yet.
     ptn_name = name.replace('.', ' ').replace('_', ' ').strip()
-    # Remove bracketed content before parsing
     ptn_name = re.sub(r'[\(\[\{].*?[\)\]\}]', '', ptn_name)
     parsed_info = PTN.parse(ptn_name)
 
     # --- PASS 2: Extract All Possible Metadata ---
-    # Store all the useful tags PTN found before we clean the title
     quality_tags_parts = [
         parsed_info.get('resolution'),
         parsed_info.get('quality'),
@@ -113,44 +110,39 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     # --- PASS 3: Aggressively Clean ONLY the Title String ---
     title_to_clean = initial_title
     
-    # Remove common symbols and channel-like tags
     title_to_clean = re.sub(r'[#@$%&~+]', '', title_to_clean)
     title_to_clean = re.sub(r'「.*?」', '', title_to_clean) 
     
-    # This regex now includes patterns for more complex junk like "192Kbps"
     junk_patterns = [
         r'\d+Kbps',
-        # General junk & scene tags
         'UNCUT', 'ORG', 'HQ', 'ESubs', 'MSubs', 'REMASTERED', 'REPACK', 'PROPER', 'iNTERNAL',
         'Sample', 'Video', 'Dual', 'Audio', 'Multi', 'Hollywood', 'Movie', 'New', 'Episode',
         'Combined', 'Complete', 'Chapter',
-        # Uploader/Group/Bot tags
         'PSA', 'JC', 'DIDAR', 'StarBoy', 'ClipmateMovies', 'OTT_Downloader_Bot', 'OTT_WebdlBot', 'MAPOriginals',
-        # Languages
         'Hindi', 'English', 'Tamil', 'Telugu', 'Kannada', 'Malayalam', 'Punjabi', 'Japanese', 'Korean',
-        # Streaming Services / Sources
-        'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5'
+        'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5',
+        '1080p', '720p', '576p', '480p', '360p', '240p', '4k', '3D',
+        'x264', 'x265', 'h264', 'h265', '10bit', 'HEVC',
+        'HDCAM', 'HDTC', 'HDRip', 'BluRay', 'WEB-DL', 'Web-Rip', 'DVDRip', 'BDRip',
+        'DTS', 'AAC', 'AC3', 'E-AC-3', 'E-AC3', 'DD', 'DDP', 'HE-AAC'
     ]
     junk_pattern_re = r'\b(' + r'|'.join(junk_patterns) + r')\b'
-    cleaned_title = re.sub(junk_pattern_re, title_to_clean, flags=re.IGNORECASE)
+    # The `repl` argument '' was missing here. This is the fix.
+    cleaned_title = re.sub(junk_pattern_re, '', title_to_clean, flags=re.IGNORECASE)
 
-    # Remove date patterns like "September 11, 2023"
     date_pattern = r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)[\s,]*\d{1,2}[\s,]*\d{4}\b'
     cleaned_title = re.sub(date_pattern, '', cleaned_title, flags=re.IGNORECASE)
     
-    # Final cleanup of extra spaces
     cleaned_title = re.sub(r'\s+', ' ', cleaned_title).strip()
 
-    # De-duplicate the title if it appears twice (e.g., "Title S01E01 Title")
     if cleaned_title:
         title_words = cleaned_title.split()
         if len(title_words) > 2 and title_words[0].lower() == title_words[-1].lower():
              cleaned_title = ' '.join(title_words[:-1])
 
-    if not cleaned_title: cleaned_title = initial_title # Fallback
+    if not cleaned_title: cleaned_title = initial_title
 
     # --- PASS 4: IMDb Verification ---
-    # Use original_name to find year if PTN missed it after cleaning
     if not year:
         found_years = re.findall(r'\b(19[89]\d|20[0-2]\d)\b', original_name)
         if found_years: year = found_years[0]
