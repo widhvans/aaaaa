@@ -83,17 +83,17 @@ class Bot(Client):
             chat_id=user_id,
             text=f"**File(s) Detected**\n\n"
                  f"📊 **Files Collected:** `{len(initial_messages)}`\n"
-                 f"⏳ **Status:** Started a 20-second window to collect more files..."
+                 f"⏳ **Status:** Started a 10-second window to collect more files..."
         )
         self.open_batches[user_id] = {
             'messages': initial_messages,
-            'timer': loop.call_later(20, lambda u=user_id: asyncio.create_task(self._finalize_collection(u))),
+            'timer': loop.call_later(10, lambda u=user_id: asyncio.create_task(self._finalize_collection(u))),
             'dashboard_message': dashboard_msg
         }
         self.last_dashboard_edit_time[user_id] = time.time()
 
     async def _finalize_collection(self, user_id):
-        # The new "Mind-Blowing" check
+        # The dynamic self-aware timer check
         if self.is_in_flood_wait:
             logger.warning(f"Finalize_collection for user {user_id} triggered during a flood wait. Rescheduling.")
             loop = asyncio.get_event_loop()
@@ -103,7 +103,8 @@ class Bot(Client):
                                                  "⚠️ **Telegram is Throttling...**\n\n"
                                                  "A FloodWait was detected. The collection window has been automatically extended to ensure all files are received.")
             # Reschedule the finalization and exit
-            collection_data['timer'] = loop.call_later(20, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
+            if collection_data:
+                collection_data['timer'] = loop.call_later(10, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
             return
 
         self.processing_users.add(user_id)
@@ -201,7 +202,6 @@ class Bot(Client):
     async def file_processor_worker(self):
         logger.info("File Processor Worker started.")
         DASHBOARD_EDIT_THROTTLE_SECONDS = 5
-        forward_counter = 0
         while True:
             try:
                 message, user_id = await self.file_queue.get()
@@ -209,13 +209,9 @@ class Bot(Client):
                 self.stream_channel_id = await get_index_db_channel(user_id) or self.owner_db_channel
                 if not self.stream_channel_id: continue
 
+                # Forward file to owner's DB channel (no more manual sleeping)
                 copied_message = await self.send_with_protection(message.copy, self.owner_db_channel)
                 if not copied_message: continue
-                
-                forward_counter += 1
-                if forward_counter % 5 == 0:
-                    logger.info("Forwarded 5 files, sleeping for 3 seconds to avoid flood wait...")
-                    await asyncio.sleep(3)
 
                 await save_file_data(user_id, message, copied_message, copied_message)
                 
@@ -242,12 +238,12 @@ class Bot(Client):
                                    dashboard_msg.edit_text,
                                    f"**File Detected**\n\n"
                                    f"📊 **Files Collected:** `{len(collection_data['messages'])}`\n"
-                                   f"⏳ **Status:** Resetting 20-second window to collect more files..."
+                                   f"⏳ **Status:** Resetting 10-second window to collect more files..."
                                )
                                self.last_dashboard_edit_time[user_id] = time.time()
                             except MessageNotModified: pass
                     
-                    collection_data['timer'] = loop.call_later(20, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
+                    collection_data['timer'] = loop.call_later(10, lambda u=user_id: asyncio.create_task(self._finalize_collection(u)))
 
             except Exception as e:
                 logger.exception(f"CRITICAL Error in file_processor_worker's main loop: {e}")
