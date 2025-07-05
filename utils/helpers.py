@@ -68,7 +68,7 @@ async def get_definitive_title_from_imdb(title_from_filename):
         imdb_title_raw = movie.get('title')
         similarity = fuzz.token_set_ratio(title_from_filename.lower(), imdb_title_raw.lower())
         
-        if similarity < 85: # Lowered threshold slightly for flexibility
+        if similarity < 85:
             logger.warning(f"IMDb mismatch rejected! Original: '{title_from_filename}', IMDb: '{imdb_title_raw}', Similarity: {similarity}%")
             return None, None
 
@@ -84,55 +84,51 @@ async def get_definitive_title_from_imdb(title_from_filename):
 
 async def clean_and_parse_filename(name: str, cache: dict = None):
     """
-    A next-gen, multi-pass robust filename parser that preserves all metadata.
+    A definitive, multi-pass robust filename parser that preserves all metadata.
     """
     original_name = name
     name_for_parsing = name
-
     season_info_str = ""
     episode_info_str = ""
 
-    # --- PASS 1: High-confidence combined Season/Episode patterns ---
-    combined_patterns = {
+    # --- PASS 1: High-confidence extraction of series info ---
+    series_patterns = {
         r'\bS(\d{1,2})\s*EP?(\d{1,4})\s*[-–—]\s*EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
         r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s*[-–—]\s*E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
         r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s+to\s+E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
+        r'\[\s*(?:E|EP)?\s*(\d{1,4})\s+to\s+(\d{1,4})\s*(?:Eps)?\s*\]': ('start_ep', 'end_ep'),
+        r'\b(?:E|EP|Ep|Episode)s?[\. ]\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\b': ('start_ep', 'end_ep'),
+        r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\s*\]': ('start_ep', 'end_ep'),
     }
-    for pattern, groups in combined_patterns.items():
+
+    for pattern, group_defs in series_patterns.items():
         match = re.search(pattern, name_for_parsing, re.IGNORECASE)
         if match:
-            season_info_str = f"S{int(match.group(1)):02d}"
-            episode_info_str = f"E{int(match.group(2)):02d}-E{int(match.group(3)):02d}"
-            name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
-            break
+            groups = match.groups()
+            group_map = dict(zip(group_defs, groups))
+            
+            if 'season' in group_map:
+                season_info_str = f"S{int(group_map['season']):02d}"
+            if 'start_ep' in group_map and 'end_ep' in group_map:
+                episode_info_str = f"E{int(group_map['start_ep']):02d}-E{int(group_map['end_ep']):02d}"
 
-    # --- PASS 2: Independent Season and Episode patterns ---
+            name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
+            if episode_info_str:
+                break
+    
     if not season_info_str:
         season_match = re.search(r'\b(S|Season)\s*(\d{1,2})\b', name_for_parsing, re.IGNORECASE)
         if season_match:
             season_info_str = f"S{int(season_match.group(2)):02d}"
             name_for_parsing = name_for_parsing.replace(season_match.group(0), ' ', 1)
 
-    if not episode_info_str:
-        episode_patterns = [
-            r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\s*\]',
-            r'\[\s*(?:E|EP)?\s*(\d{1,4})\s+to\s+(\d{1,4})\s*(?:Eps)?\s*\]',
-            r'\b(?:E|EP|Ep|Episode)s?[\. ]\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\b',
-        ]
-        for pattern in episode_patterns:
-            match = re.search(pattern, name_for_parsing, re.IGNORECASE)
-            if match:
-                episode_info_str = f"E{int(match.group(1)):02d}-E{int(match.group(2)):02d}"
-                name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
-                break
-
-    # --- PASS 3: PTN as a fallback ---
+    # --- PASS 2: PTN Fallback ---
     ptn_name = name_for_parsing.replace('.', ' ').replace('_', ' ')
     parsed_info = PTN.parse(ptn_name)
     
     initial_title = parsed_info.get('title', '').strip()
     if not season_info_str and parsed_info.get('season'):
-        season_info_str = f"S{parsed_info.get('season'):02d}"
+        season_info_str = f"S{int(parsed_info.get('season')):02d}"
     if not episode_info_str and parsed_info.get('episode'):
         episode = parsed_info.get('episode')
         if isinstance(episode, list):
@@ -142,13 +138,12 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     
     year = parsed_info.get('year')
 
-    # --- PASS 4: Aggressive Title Cleaning ---
+    # --- PASS 3: Aggressive Title Cleaning ---
     title_to_clean = initial_title
     
     if year:
         title_to_clean = re.sub(r'\b' + str(year) + r'\b', '', title_to_clean)
 
-    title_to_clean = re.sub(r'\bS\d{1,2}\b|\bE\d{1,4}\b', '', title_to_clean, flags=re.IGNORECASE)
     title_to_clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', title_to_clean)
     
     junk_words = [
@@ -167,7 +162,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
 
     if not cleaned_title: cleaned_title = " ".join(original_name.split('.')[:-1])
 
-    # --- PASS 5: IMDb Verification (with Caching) ---
+    # --- PASS 4: IMDb Verification ---
     if not year:
         found_years = re.findall(r'\b(19[89]\d|20[0-3]\d)\b', original_name)
         if found_years: year = found_years[0]
@@ -176,17 +171,14 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     cache_key = f"{cleaned_title}_{year}" if year else cleaned_title
     if cache is not None and cache_key in cache:
         definitive_title, definitive_year = cache[cache_key]
-        logger.info(f"IMDb CACHE HIT for '{cache_key}'")
     else:
-        logger.info(f"IMDb CACHE MISS for '{cache_key}'. Fetching from network...")
         definitive_title, definitive_year = await get_definitive_title_from_imdb(cleaned_title)
         if cache is not None:
             cache[cache_key] = (definitive_title, definitive_year)
 
-    # --- PASS 6: Reconstruct and Return ---
+    # --- PASS 5: Reconstruction ---
     final_title = definitive_title if definitive_title else cleaned_title.title()
     final_year = definitive_year if definitive_year else year
-    
     is_series = season_info_str != "" or episode_info_str != ""
 
     display_title = f"{final_title.strip()}" + (f" ({final_year})" if final_year else "")
