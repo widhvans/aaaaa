@@ -100,61 +100,74 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     original_name = name
     
     # --- PASS 0: RADICAL PRE-CLEANING ---
-    # This removes junk from within brackets and parentheses BEFORE parsing
     name_for_parsing = name.replace('_', ' ').replace('.', ' ')
-    
-    # Remove any web addresses
     name_for_parsing = re.sub(r'www\..*?\..*?(?=\s|$)', '', name_for_parsing, flags=re.IGNORECASE)
     
-    # More aggressive bracket cleaning
-    name_for_parsing = re.sub(r'\[.*?\]', '', name_for_parsing).strip()
-    name_for_parsing = re.sub(r'\(.*?\)', '', name_for_parsing).strip()
+    # More aggressive bracket cleaning for PTN, but keep original for episode parsing
+    name_for_ptn = re.sub(r'\[.*?\]', '', name_for_parsing).strip()
+    name_for_ptn = re.sub(r'\(.*?\)', '', name_for_ptn).strip()
 
 
     season_info_str = ""
     episode_info_str = ""
 
-    # --- PASS 1: High-confidence combined Season/Episode patterns ---
-    # We use the original name for these patterns to not miss data
+    # --- NEW PASS 1: High-confidence numeric range episode detection ---
+    # Looks for patterns like [09 To 12 Eps] or [01-12] etc.
     search_name_for_eps = name.replace('_', ' ').replace('.', ' ')
-    combined_patterns = {
-        r'\bS(\d{1,2})\s*EP?(\d{1,4})\s*[-–—\s]*EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
-        r'\bS(\d{1,2})\s*EP?(\d{1,4})\s+to\s+EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
-        r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s*[-–—]\s*E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
-        r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s+to\s+E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
-    }
-    for pattern, groups in combined_patterns.items():
+    range_patterns = [
+        # Matches [09 To 12 Eps], [09 - 12]
+        r'\[\s*(\d{1,4})\s*(?:to|-|–|—)\s*(\d{1,4})\s*(?:Eps?)?\s*\]',
+        # Matches E01-E12, EP01-12, Episode 01 to 12
+        r'\b(?:E|EP|Episode)s?[\s.]?(\d{1,4})\s*(?:to|-|–|—)\s*(\d{1,4})\b',
+        # Matches a range directly after a season tag, e.g., S01 01-12
+        r'\bS(\d{1,2})[\s.]?(\d{1,4})\s*(?:to|-|–|—)\s*(\d{1,4})\b'
+    ]
+    for pattern in range_patterns:
         match = re.search(pattern, search_name_for_eps, re.IGNORECASE)
         if match:
-            season_info_str = f"S{int(match.group(1)):02d}"
-            episode_info_str = f"E{int(match.group(2)):02d}-E{int(match.group(3)):02d}"
-            name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
-            break
+            groups = match.groups()
+            if pattern.startswith(r'\bS'): # Handle the third pattern
+                if not season_info_str: # Only set season if not already found
+                    season_info_str = f"S{int(groups[0]):02d}"
+                start_ep, end_ep = groups[1], groups[2]
+            else:
+                start_ep, end_ep = groups[0], groups[1]
+            
+            # Ensure it's an increasing range
+            if int(start_ep) < int(end_ep):
+                episode_info_str = f"E{int(start_ep):02d}-E{int(end_ep):02d}"
+                name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
+                name_for_ptn = name_for_ptn.replace(match.group(0), ' ', 1)
+                break 
 
-    # --- PASS 2: Independent Season and Episode patterns ---
+    # --- PASS 2: High-confidence combined Season/Episode patterns (if not found above) ---
+    if not episode_info_str:
+        combined_patterns = {
+            r'\bS(\d{1,2})\s*EP?(\d{1,4})\s*[-–—\s]*EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
+            r'\bS(\d{1,2})\s*EP?(\d{1,4})\s+to\s+EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
+            r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s*[-–—]\s*E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
+            r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s+to\s+E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
+        }
+        for pattern, groups in combined_patterns.items():
+            match = re.search(pattern, search_name_for_eps, re.IGNORECASE)
+            if match:
+                if not season_info_str:
+                    season_info_str = f"S{int(match.group(1)):02d}"
+                episode_info_str = f"E{int(match.group(2)):02d}-E{int(match.group(3)):02d}"
+                name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
+                name_for_ptn = name_for_ptn.replace(match.group(0), ' ', 1)
+                break
+
+    # --- PASS 3: Independent Season and Single Episode patterns ---
     if not season_info_str:
         season_match = re.search(r'\b(S|Season)\s*(\d{1,2})\b', search_name_for_eps, re.IGNORECASE)
         if season_match:
             season_info_str = f"S{int(season_match.group(2)):02d}"
             name_for_parsing = name_for_parsing.replace(season_match.group(0), ' ', 1)
+            name_for_ptn = name_for_ptn.replace(season_match.group(0), ' ', 1)
 
-    if not episode_info_str:
-        episode_patterns = [
-            r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\s*\]',
-            r'\b(?:E|EP|Ep|Episode)s?[\. ]?\s*(\d{1,4})\s*[-–—\s]?\s*(to)?\s*(\d{1,4})\b',
-            r'\[(\d{1,2})\s+To\s+(\d{1,2})\s+Eps\]',
-        ]
-        for pattern in episode_patterns:
-            match = re.search(pattern, search_name_for_eps, re.IGNORECASE)
-            if match:
-                start_ep = match.group(1)
-                end_ep = match.group(3) # Group 3 will be the end episode
-                episode_info_str = f"E{int(start_ep):02d}-E{int(end_ep):02d}"
-                name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
-                break
-
-    # --- PASS 3: PTN as a fallback on the pre-cleaned name ---
-    parsed_info = PTN.parse(name_for_parsing)
+    # --- PASS 4: PTN as a fallback on the pre-cleaned name ---
+    parsed_info = PTN.parse(name_for_ptn)
     
     initial_title = parsed_info.get('title', '').strip()
     if not season_info_str and parsed_info.get('season'):
@@ -168,7 +181,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     
     year = parsed_info.get('year')
 
-    # --- PASS 4: Aggressive Title Cleaning on the result of PTN ---
+    # --- PASS 5: Aggressive Title Cleaning on the result of PTN ---
     title_to_clean = initial_title
     
     if year:
@@ -194,7 +207,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     # If cleaning results in an empty string, fall back to the original name's base
     if not cleaned_title: cleaned_title = " ".join(original_name.split('.')[:-1])
 
-    # --- PASS 5: IMDb Verification (with Caching) ---
+    # --- PASS 6: IMDb Verification (with Caching) ---
     if not year:
         found_years = re.findall(r'\b(19[89]\d|20[0-3]\d)\b', original_name)
         if found_years: year = found_years[0]
@@ -210,7 +223,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
         if cache is not None:
             cache[cache_key] = (definitive_title, definitive_year)
 
-    # --- PASS 6: Reconstruct and Return ---
+    # --- PASS 7: Reconstruct and Return ---
     # Use the definitive title from IMDb if found, otherwise use our cleaned title
     final_title = definitive_title if definitive_title else cleaned_title.title()
     final_year = definitive_year if definitive_year else year
