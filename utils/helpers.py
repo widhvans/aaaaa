@@ -24,33 +24,6 @@ def go_back_button(user_id):
     """Creates a standard 'Go Back' button to return to the main menu."""
     return InlineKeyboardMarkup([[InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")]])
 
-def get_batch_key_from_filename(filename: str) -> str:
-    """
-    Generates a batch key based on significant words (5+ letters) in the filename.
-    """
-    try:
-        # Use PTN to get a base title first
-        parsed_info = PTN.parse(filename.replace('.', ' ').replace('_', ' '))
-        title = parsed_info.get('title', '')
-        
-        # If PTN fails, fallback to a simpler cleaning method
-        if not title:
-            name_without_ext = ".".join(filename.split('.')[:-1])
-            title = re.sub(r'[^a-zA-Z0-9\s]', '', name_without_ext.replace('.', ' ').replace('_', ' '))
-
-        # Extract significant words
-        words = {word.lower() for word in title.split() if len(word) >= 5 and not word.isdigit()}
-        
-        if not words:
-            # Fallback to the full cleaned title if no significant words are found
-            return title.lower().strip()
-            
-        # Sort words to ensure consistency ("king.lion" is same as "lion.king")
-        return ".".join(sorted(list(words)))
-    except Exception:
-        # Ultimate fallback
-        return filename.lower()
-
 def format_bytes(size):
     """Converts bytes to a human-readable format with custom rounding."""
     if not isinstance(size, (int, float)) or size == 0:
