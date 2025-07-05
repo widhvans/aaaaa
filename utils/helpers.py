@@ -20,6 +20,21 @@ TEXT_MESSAGE_LIMIT = 4096
 
 ia = Cinemagoer()
 
+def simple_clean_filename(name: str) -> str:
+    """
+    A simple, synchronous function to clean a filename for display purposes.
+    Removes brackets, extensions, and extra whitespace.
+    """
+    # Remove extension
+    clean_name = ".".join(name.split('.')[:-1]) if '.' in name else name
+    # Remove all content within brackets: (), [], {}
+    clean_name = re.sub(r'[\(\[\{].*?[\)\]\}]', '', clean_name)
+    # Replace separators and clean up spaces
+    clean_name = clean_name.replace('.', ' ').replace('_', ' ').strip()
+    # Final cleanup of extra spaces
+    clean_name = re.sub(r'\s+', ' ', clean_name).strip()
+    return clean_name
+
 def go_back_button(user_id):
     """Creates a standard 'Go Back' button to return to the main menu."""
     return InlineKeyboardMarkup([[InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")]])
@@ -89,6 +104,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     # Remove junk keywords
     junk_patterns = [
         r'Sample Video', r'Dual Audio', r'Hindi E\w*', r'Hindi', r'English', 'Tamil',
+        r'NF', r'Hollywood', r'Movie', r'O', # Added new junk words
         r'HDCAM', r'HDTC', 'HDRip', 'BluRay', 'WEB-DL', 'Web-Rip', 'DVDRip',
         r'\b(1080p|720p|480p)\b'
     ]
