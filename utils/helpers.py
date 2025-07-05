@@ -87,14 +87,15 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     A next-gen, multi-pass robust filename parser that preserves all metadata.
     """
     original_name = name
-    name_for_parsing = name
+    name_for_parsing = name.replace('_', ' ').replace('.', ' ')
 
     season_info_str = ""
     episode_info_str = ""
 
     # --- PASS 1: High-confidence combined Season/Episode patterns ---
     combined_patterns = {
-        r'\bS(\d{1,2})\s*EP?(\d{1,4})\s*[-–—]\s*EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
+        r'\bS(\d{1,2})\s*EP?(\d{1,4})\s*[-–—\s]*EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
+        r'\bS(\d{1,2})\s*EP?(\d{1,4})\s+to\s+EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
         r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s*[-–—]\s*E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
         r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s+to\s+E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
     }
@@ -116,14 +117,16 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     if not episode_info_str:
         episode_patterns = [
             r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\s*\]',
-            r'\[\s*(?:E|EP)?\s*(\d{1,4})\s+to\s+(\d{1,4})\s*(?:Eps)?\s*\]',
-            r'\b(?:E|EP|Ep|Episode)s?[\. ]\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\b',
+            r'\b(?:E|EP|Ep|Episode)s?[\. ]?\s*(\d{1,4})\s*[-–—\s]?\s*(to)?\s*(\d{1,4})\b',
             r'\[(\d{1,2})\s+To\s+(\d{1,2})\s+Eps\]',
         ]
         for pattern in episode_patterns:
+            # The new regex now handles 'to' optionally
             match = re.search(pattern, name_for_parsing, re.IGNORECASE)
             if match:
-                episode_info_str = f"E{int(match.group(1)):02d}-E{int(match.group(2)):02d}"
+                start_ep = match.group(1)
+                end_ep = match.group(3) # Group 3 will be the end episode
+                episode_info_str = f"E{int(start_ep):02d}-E{int(end_ep):02d}"
                 name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
                 break
 
@@ -240,6 +243,7 @@ async def create_post(client, user_id, messages, cache: dict):
         if info.get('episode_info'):
             numbers = re.findall(r'\d+', info['episode_info'])
             if numbers:
+                # Format to two digits and join with a hyphen
                 ep_text = '-'.join(f"{int(n):02d}" for n in numbers)
                 display_tags_parts.append(f"ep {ep_text}")
 
