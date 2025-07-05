@@ -56,7 +56,7 @@ def format_bytes(size):
 async def get_definitive_title_from_imdb(title_from_filename):
     """
     Uses the cinemagoer library to find the official title and year from IMDb,
-    with a new "reality check" to prevent mismatches.
+    with an ultra-strict "reality check" to prevent mismatches.
     """
     if not title_from_filename:
         return None, None
@@ -72,7 +72,7 @@ async def get_definitive_title_from_imdb(title_from_filename):
         imdb_title_raw = movie.get('title')
         similarity = fuzz.token_set_ratio(title_from_filename.lower(), imdb_title_raw.lower())
         
-        if similarity < 85:
+        if similarity < 90:
             logger.warning(f"IMDb mismatch rejected! Original: '{title_from_filename}', IMDb: '{imdb_title_raw}', Similarity: {similarity}%")
             return None, None
 
@@ -91,20 +91,26 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     A next-gen, multi-pass robust filename parser that preserves all metadata.
     """
     original_name = name
+    name_for_parsing = name
     episode_info_str = ""
 
-    # --- PASS 1: Manual Extraction of Complex Patterns (like Episode Ranges) ---
-    range_match = re.search(
-        r'[\[\(\s][Ee](?:p(?:isode)?)?\.?\s*(\d+)\s*-\s*[Ee]?\.?\s*(\d+)[\]\)\s]',
-        name, re.IGNORECASE
-    )
-    if range_match:
-        start_ep, end_ep = int(range_match.group(1)), int(range_match.group(2))
-        episode_info_str = f"E{start_ep:02d}-E{end_ep:02d}"
-        name = name.replace(range_match.group(0), ' ')
+    # --- PASS 1: Manual Extraction of Complex Patterns (Episode Ranges) ---
+    range_patterns = [
+        r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*-\s*(\d{1,4})\s*\]',
+        r'\b(?:E|EP|Ep\.)\s*(\d{1,4})\s*-\s*(\d{1,4})\b',
+        r'\[\s*(\d{1,4})\s*to\s*(\d{1,4})\s*Eps?\s*\]',
+        r'\[\s*(?:E|EP)\s*(\d{1,4})\s*to\s*(\d{1,4})\s*\]'
+    ]
+    for pattern in range_patterns:
+        range_match = re.search(pattern, name_for_parsing, re.IGNORECASE)
+        if range_match:
+            start_ep, end_ep = int(range_match.group(1)), int(range_match.group(2))
+            episode_info_str = f"E{start_ep:02d}-E{end_ep:02d}"
+            name_for_parsing = name_for_parsing.replace(range_match.group(0), ' ', 1)
+            break 
 
-    # --- PASS 2: Parse First, Clean Later ---
-    ptn_name = name.replace('.', ' ').replace('_', ' ')
+    # --- PASS 2: Parse with PTN ---
+    ptn_name = name_for_parsing.replace('.', ' ').replace('_', ' ')
     parsed_info = PTN.parse(ptn_name)
 
     # --- PASS 3: Extract and Safeguard All Metadata ---
@@ -157,7 +163,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
 
     # --- PASS 5: IMDb Verification (with Caching) ---
     if not year:
-        found_years = re.findall(r'\b(19[89]\d|20[0-2]\d)\b', original_name)
+        found_years = re.findall(r'\b(19[89]\d|20[0-3]\d)\b', original_name)
         if found_years: year = found_years[0]
         
     definitive_title, definitive_year = None, None
@@ -175,7 +181,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     final_title = definitive_title if definitive_title else cleaned_title
     final_year = definitive_year if definitive_year else year
     
-    # Final episode formatting, prioritizing the manually found range
+    # Final episode formatting, prioritizing manually found range and handling PTN lists
     if not episode_info_str and episode:
         if isinstance(episode, list):
             if len(episode) > 1:
