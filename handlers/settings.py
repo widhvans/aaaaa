@@ -5,7 +5,7 @@ import aiohttp
 from pyrogram import Client, filters, enums
 from pyrogram.enums import ParseMode
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
-from pyrogram.errors import MessageNotModified
+from pyrogram.errors import MessageNotModified, UserNotParticipant
 from database.db import (
     get_user, update_user, add_to_list, remove_from_list,
     get_user_file_count, add_footer_button, remove_footer_button,
@@ -113,15 +113,19 @@ async def get_fsub_menu_parts(client, user_id):
         if is_valid:
             try:
                 chat = await client.get_chat(fsub_ch)
-                text += f"Current FSub Channel: **{chat.title}**"
+                text += f"Current FSub Channel: **{chat.title}** (`{fsub_ch}`)"
             except:
                 text += f"Current FSub Channel ID: `{fsub_ch}`"
     else:
         text += "No FSub channel is set."
-    return text, InlineKeyboardMarkup([
+    buttons = [
         [InlineKeyboardButton("✏️ Set/Change FSub", callback_data="set_fsub")],
-        [go_back_button(user_id).inline_keyboard[0][0]]
-    ])
+    ]
+    if fsub_ch:
+        buttons.append([InlineKeyboardButton("🗑️ Remove FSub", callback_data="remove_fsub")])
+    buttons.append([go_back_button(user_id).inline_keyboard[0][0]])
+    return text, InlineKeyboardMarkup(buttons)
+
 
 @Client.on_callback_query(filters.regex("^how_to_download_menu$"))
 async def how_to_download_menu_handler(client, query):
@@ -343,13 +347,13 @@ async def start_backup_process(client, query):
         for doc in all_file_docs:
             if not doc.get('file_name'): continue
             
-            parsed_info = clean_and_parse_filename(doc['file_name'])
+            parsed_info = await clean_and_parse_filename(doc['file_name'])
             if not parsed_info: continue
             doc_title = parsed_info['batch_title']
 
             added_to_existing_batch = False
             for batch in batches:
-                batch_info = clean_and_parse_filename(batch[0]['file_name'])
+                batch_info = await clean_and_parse_filename(batch[0]['file_name'])
                 if not batch_info: continue
                 batch_title = batch_info['batch_title']
                 
@@ -368,10 +372,12 @@ async def start_backup_process(client, query):
             if user_id not in ACTIVE_BACKUP_TASKS:
                 await safe_edit_message(query, text="❌ Backup cancelled by user.", reply_markup=go_back_button(user_id)); return
             try:
-                message_ids = [int(d['raw_link'].split('/')[-1]) for d in file_docs_batch]
+                # Assuming all files in a batch are from the same source channel
                 source_chat_id = int("-100" + file_docs_batch[0]['raw_link'].split('/')[-2])
+                message_ids = [int(d['raw_link'].split('/')[-1]) for d in file_docs_batch]
+                
                 file_messages = await client.get_messages(source_chat_id, message_ids)
-                posts_to_send = await create_post(client, user_id, file_messages)
+                posts_to_send = await create_post(client, user_id, file_messages, {})
                 for post in posts_to_send:
                     poster, caption, footer = post
                     if poster: await client.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer)
@@ -413,20 +419,49 @@ async def manage_footer_handler(client, query):
 @Client.on_callback_query(filters.regex("add_footer"))
 async def add_footer_handler(client, query):
     user_id = query.from_user.id
+    prompt_msg = None
     try:
         prompt_msg = await query.message.edit_text("Send the name for your new button.", reply_markup=go_back_button(user_id))
         button_name_msg = await client.listen(chat_id=user_id, timeout=300)
-        await prompt_msg.edit_text(f"OK. Now, send the URL for the '{button_name_msg.text}' button.", reply_markup=go_back_button(user_id))
+        button_name = button_name_msg.text
+        await button_name_msg.delete()
+
+        await prompt_msg.edit_text(f"OK. Now, send the URL for the '{button_name}' button.", reply_markup=go_back_button(user_id))
         button_url_msg = await client.listen(chat_id=user_id, timeout=300)
         button_url = button_url_msg.text.strip()
+        await button_url_msg.delete()
+
         if not button_url.startswith(("http://", "https://")):
             button_url = "https://" + button_url
-        await add_footer_button(user_id, button_name_msg.text, button_url)
-        await button_name_msg.delete(); await button_url_msg.delete()
-        await safe_edit_message(query, text="✅ New footer button added!", reply_markup=go_back_button(user_id))
-    except asyncio.TimeoutError: await safe_edit_message(query, text="❗️ **Timeout:** Cancelled.", reply_markup=go_back_button(user_id))
+
+        await prompt_msg.edit_text(f"⏳ **Validating URL...**\n`{button_url}`")
+        is_valid = False
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.head(button_url, timeout=5, allow_redirects=True) as resp:
+                    if resp.status in range(200, 400):
+                        is_valid = True
+        except Exception as e:
+            logger.error(f"URL validation failed for footer button: {e}")
+
+        if is_valid:
+            await add_footer_button(user_id, button_name, button_url)
+            await prompt_msg.edit_text("✅ New footer button added!")
+            await asyncio.sleep(2)
+            await manage_footer_handler(client, query)
+        else:
+            await prompt_msg.edit_text(
+                "❌ **Validation Failed!**\n\nThe URL you provided appears to be invalid or inaccessible. "
+                "Your button has **not** been saved.\n\n"
+                "Please check the link and try again.",
+                reply_markup=go_back_button(user_id)
+            )
+    except asyncio.TimeoutError:
+        if prompt_msg: await safe_edit_message(prompt_msg, text="❗️ **Timeout:** Cancelled.", reply_markup=go_back_button(user_id))
     except Exception as e:
-        logger.exception("Error in add_footer_handler"); await safe_edit_message(query, text=f"An error occurred: {e}", reply_markup=go_back_button(user_id))
+        logger.exception("Error in add_footer_handler")
+        if prompt_msg: await safe_edit_message(prompt_msg, text=f"An error occurred: {e}", reply_markup=go_back_button(user_id))
+
 
 @Client.on_callback_query(filters.regex(r"rm_footer_"))
 async def remove_footer_handler(client, query):
@@ -539,88 +574,87 @@ async def set_filename_link_handler(client, query):
     except:
         logger.exception("Error in set_filename_link_handler"); await safe_edit_message(query, text="An error occurred.", reply_markup=go_back_button(user_id))
 
-@Client.on_callback_query(filters.regex("^(set_fsub|set_download)$"))
-async def set_other_links_handler(client, query):
-    user_id, action = query.from_user.id, query.data.split("_")[1]
+@Client.on_callback_query(filters.regex("^(set_fsub|set_download|remove_fsub)$"))
+async def fsub_and_download_handler(client, query):
+    user_id = query.from_user.id
+    action = query.data.split("_")[1]
+
+    # Handle FSub removal
+    if action == "fsub" and query.data == "remove_fsub":
+        await update_user(user_id, "fsub_channel", None)
+        await query.answer("FSub channel has been removed.", show_alert=True)
+        text, markup = await get_fsub_menu_parts(client, user_id)
+        await safe_edit_message(query, text, reply_markup=markup)
+        return
+
     prompts = {
-        "fsub": ("📢 **Set FSub**\n\nForward a message from your FSub channel.", "fsub_channel"),
+        "fsub": ("📢 **Set FSub**\n\nForward a message from your FSub channel. I must be an admin there to work correctly.", "fsub_channel"),
         "download": ("❓ **Set 'How to Download'**\n\nSend your tutorial URL.", "how_to_download_link")
     }
     prompt_text, key = prompts[action]
     
     prompt = None
+    response = None
     try:
+        initial_text = prompt_text
         if action == "download":
             user = await get_user(user_id)
-            if user:
-                current_link = user.get(key)
-                if current_link:
-                    prompt_text += f"\n\n**Current Link:** `{current_link}`"
-
-        prompt = await query.message.edit_text(prompt_text, reply_markup=go_back_button(user_id), disable_web_page_preview=True)
+            if user and user.get(key):
+                initial_text += f"\n\n**Current Link:** `{user.get(key)}`"
+        prompt = await query.message.edit_text(initial_text, reply_markup=go_back_button(user_id), disable_web_page_preview=True)
         
         listen_filters = filters.forwarded if action == "fsub" else filters.text
         response = await client.listen(chat_id=user_id, timeout=300, filters=listen_filters)
         
-        value = None
         if action == "fsub":
             if not response.forward_from_chat:
-                await response.reply("Not a valid forwarded message.", reply_markup=go_back_button(user_id))
+                await safe_edit_message(prompt, "This is not a valid forwarded message from a channel.", reply_markup=go_back_button(user_id))
                 return
-            value = response.forward_from_chat.id
-            await update_user(user_id, key, value)
-            await response.reply("✅ FSub channel updated!", reply_markup=go_back_button(user_id))
+            
+            channel_id = response.forward_from_chat.id
+            await safe_edit_message(prompt, "⏳ Checking permissions in the channel...")
+            
+            try:
+                member = await client.get_chat_member(channel_id, "me")
+                if member.status not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
+                    raise UserNotParticipant
+            except UserNotParticipant:
+                await safe_edit_message(prompt, "❌ **Permission Denied!**\n\nI am either not a member of this channel, or I am not an admin. Please add me to the channel, grant me admin rights, and try again.", reply_markup=go_back_button(user_id))
+                return
 
-        else:
+            await update_user(user_id, key, channel_id)
+            await safe_edit_message(prompt, f"✅ **Success!** FSub channel updated to **{response.forward_from_chat.title}**.")
+            await asyncio.sleep(2)
+            text, markup = await get_fsub_menu_parts(client, user_id)
+            await safe_edit_message(prompt, text, reply_markup=markup)
+        
+        else: # action == "download"
             url_to_check = response.text.strip()
-            if not url_to_check.startswith(("http://", "https://")):
-                url_to_check = "https://" + url_to_check
-
-            await prompt.edit_text(f"⏳ **Validating URL...**\n`{url_to_check}`")
+            if not url_to_check.startswith(("http://", "https://")): url_to_check = "https://" + url_to_check
+            await safe_edit_message(prompt, f"⏳ **Validating URL...**\n`{url_to_check}`")
             
             is_valid = False
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.head(url_to_check, timeout=5, allow_redirects=True) as resp:
-                        if resp.status in range(200, 400):
-                            is_valid = True
-            except Exception as e:
-                logger.error(f"URL validation failed for {url_to_check}: {e}")
-                is_valid = False
+                        if resp.status in range(200, 400): is_valid = True
+            except Exception as e: logger.error(f"URL validation failed for {url_to_check}: {e}")
 
             if is_valid:
                 await update_user(user_id, key, url_to_check)
-                await prompt.edit_text("✅ **Success!**\n\nYour 'How to Download' link has been verified and saved.")
-                await asyncio.sleep(3)
+                await safe_edit_message(prompt, "✅ **Success!** Your 'How to Download' link has been saved.")
+                await asyncio.sleep(2)
                 await how_to_download_menu_handler(client, query)
-
             else:
-                await prompt.edit_text(
-                    "❌ **Validation Failed!**\n\n"
-                    "The URL you provided appears to be invalid or inaccessible. "
-                    "Your settings have **not** been saved.\n\n"
-                    "Please check the link and try again.",
-                    reply_markup=go_back_button(user_id)
-                )
+                await safe_edit_message(prompt, "❌ **Validation Failed!**\n\nThe URL you provided is invalid or inaccessible. Your settings have not been saved.", reply_markup=go_back_button(user_id))
 
     except asyncio.TimeoutError:
-        if prompt:
-            await safe_edit_message(prompt, text="❗️ **Timeout:** Cancelled.", reply_markup=go_back_button(user_id))
+        if prompt: await safe_edit_message(prompt, text="❗️ **Timeout:** Cancelled.", reply_markup=go_back_button(user_id))
     except Exception as e:
-        logger.exception("Error in set_other_links_handler")
-        if prompt:
-            await safe_edit_message(prompt, text=f"An error occurred: {e}", reply_markup=go_back_button(user_id))
+        logger.exception("Error in handler")
+        if prompt: await safe_edit_message(prompt, text=f"An error occurred: {e}", reply_markup=go_back_button(user_id))
     finally:
-        if 'response' in locals() and response:
-            try:
-                await response.delete()
-            except:
-                pass
-        if action == 'fsub' and prompt:
-             try:
-                await prompt.delete()
-             except:
-                 pass
+        if response: await response.delete()
 
 
 @Client.on_callback_query(filters.regex("^set_shortener$"))
