@@ -235,11 +235,15 @@ async def create_post(client, user_id, messages, cache: dict):
     all_link_entries = []
     for info in media_info_list:
         display_tags_parts = []
-        if info.get('season_info'): 
-            display_tags_parts.append(info['season_info'])
-        if info.get('episode_info'): 
-            display_tags_parts.append(info['episode_info'])
-        if info.get('quality_tags'): 
+        
+        # New logic to format episode string as "ep 01-05"
+        if info.get('episode_info'):
+            numbers = re.findall(r'\d+', info['episode_info'])
+            if numbers:
+                ep_text = '-'.join(f"{int(n):02d}" for n in numbers)
+                display_tags_parts.append(f"ep {ep_text}")
+
+        if info.get('quality_tags'):
             display_tags_parts.append(info['quality_tags'])
         
         display_tags = " | ".join(filter(None, display_tags_parts))
