@@ -112,16 +112,15 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     episode_info_str = ""
 
     # --- NEW PASS 1: High-confidence numeric range episode detection ---
-    # Looks for patterns like [09 To 12 Eps], [01-12] etc.
-    search_name_for_eps = name.replace('_', ' ').replace('.', ' ')
-    # This pattern is now smarter, handling Ep.01-05 and similar cases
+    # Looks for patterns like [09 To 12 Eps], Ep.01-05, etc.
+    search_name_for_eps = name.replace('_', '.').replace(' ', '.')
     range_patterns = [
-        # Matches [09 To 12 Eps], [09-12], Ep.01-05, 01-05
-        r'\b(?:E|Ep|Episode)s?[\s.]?(\d{1,4})[\s.]?(?:to|-|–|—)[\s.]?(\d{1,4})\b',
-        # Matches [ 01-12 ]
+        # Matches Ep.01-05, E.01-05, Ep 01-05 etc.
+        r'\b(?:E|Ep|Episode)s?\.?\s?(\d{1,4})\.?\s?(?:to|-|–|—)\.?\s?(\d{1,4})\b',
+        # Matches [ 01-12 ] or [01 to 12]
         r'\[\s*(\d{1,4})\s*(?:to|-|–|—)\s*(\d{1,4})\s*\]',
-        # Matches a range directly after a season tag, e.g., S01 01-12
-        r'\bS(\d{1,2})[\s.]?(\d{1,4})\s*(?:to|-|–|—)\s*(\d{1,4})\b'
+        # Matches a range directly after a season tag, e.g., S01.01-12
+        r'\bS(\d{1,2})\.?\s?(\d{1,4})\.?\s?(?:to|-|–|—)\.?\s?(\d{1,4})\b'
     ]
     for pattern in range_patterns:
         match = re.search(pattern, search_name_for_eps, re.IGNORECASE)
@@ -146,11 +145,9 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
         combined_patterns = {
             r'\bS(\d{1,2})\s*EP?(\d{1,4})\s*[-–—\s]*EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
             r'\bS(\d{1,2})\s*EP?(\d{1,4})\s+to\s+EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
-            r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s*[-–—]\s*E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
-            r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s+to\s+E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
         }
         for pattern, groups in combined_patterns.items():
-            match = re.search(pattern, search_name_for_eps, re.IGNORECASE)
+            match = re.search(pattern, name_for_parsing, re.IGNORECASE)
             if match:
                 if not season_info_str:
                     season_info_str = f"S{int(match.group(1)):02d}"
@@ -161,7 +158,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
 
     # --- PASS 3: Independent Season and Single Episode patterns ---
     if not season_info_str:
-        season_match = re.search(r'\b(S|Season)\s*(\d{1,2})\b', search_name_for_eps, re.IGNORECASE)
+        season_match = re.search(r'\b(S|Season)\s*(\d{1,2})\b', name_for_parsing, re.IGNORECASE)
         if season_match:
             season_info_str = f"S{int(season_match.group(2)):02d}"
             name_for_parsing = name_for_parsing.replace(season_match.group(0), ' ', 1)
@@ -225,13 +222,16 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
             cache[cache_key] = (definitive_title, definitive_year)
 
     # --- PASS 7: Reconstruct and Return ---
-    # Use the definitive title from IMDb if found, otherwise use our cleaned title
     final_title = definitive_title if definitive_title else cleaned_title.title()
     final_year = definitive_year if definitive_year else year
-    
-    is_series = season_info_str != "" or episode_info_str != ""
+    is_series = bool(season_info_str or episode_info_str)
 
-    display_title = f"{final_title.strip()}" + (f" ({final_year})" if final_year else "")
+    # --- FINAL FIX: Construct the display title correctly with season ---
+    display_title = final_title.strip()
+    if is_series and season_info_str:
+        display_title += f" {season_info_str}"
+    if final_year:
+        display_title += f" ({final_year})"
         
     return {
         "batch_title": f"{final_title} {season_info_str}".strip(),
@@ -265,7 +265,9 @@ async def create_post(client, user_id, messages, cache: dict):
     primary_display_title = first_info['display_title']
     
     base_caption_header = f"🎬 **{primary_display_title}**"
-    post_poster = await get_poster(primary_display_title, first_info['year']) if user.get('show_poster', True) else None
+    # Use the cleaner display title for poster search now
+    poster_search_query = re.sub(r'\sS\d{2}', '', primary_display_title).strip() 
+    post_poster = await get_poster(poster_search_query, first_info['year']) if user.get('show_poster', True) else None
     
     footer_buttons = user.get('footer_buttons', [])
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], url=btn['url'])] for btn in footer_buttons]) if footer_buttons else None
