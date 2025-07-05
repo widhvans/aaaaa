@@ -25,13 +25,9 @@ def simple_clean_filename(name: str) -> str:
     A simple, synchronous function to clean a filename for display purposes.
     Removes brackets, extensions, and extra whitespace.
     """
-    # Remove extension
     clean_name = ".".join(name.split('.')[:-1]) if '.' in name else name
-    # Remove all content within brackets: (), [], {}
     clean_name = re.sub(r'[\(\[\{].*?[\)\]\}]', '', clean_name)
-    # Replace separators and clean up spaces
     clean_name = clean_name.replace('.', ' ').replace('_', ' ').strip()
-    # Final cleanup of extra spaces
     clean_name = re.sub(r'\s+', ' ', clean_name).strip()
     return clean_name
 
@@ -93,11 +89,13 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     original_name = name
     name_for_parsing = name
     episode_info_str = ""
+    season_info_str = ""
 
-    # --- PASS 1: Manual Extraction of Complex Patterns (Episode Ranges) ---
+    # --- PASS 1: Manual Extraction of Complex Patterns (Episode Ranges & Seasons) ---
+    # This engine runs first to find all possible episode range formats.
     range_patterns = [
         r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*-\s*(\d{1,4})\s*\]',
-        r'\b(?:E|EP|Ep\.)\s*(\d{1,4})\s*-\s*(\d{1,4})\b',
+        r'\b(?:E|EP|Ep\.)\s*(\d{1,4})\s*(?:-)\s*(\d{1,4})\b',
         r'\[\s*(\d{1,4})\s*to\s*(\d{1,4})\s*Eps?\s*\]',
         r'\[\s*(?:E|EP)\s*(\d{1,4})\s*to\s*(\d{1,4})\s*\]'
     ]
@@ -107,7 +105,11 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
             start_ep, end_ep = int(range_match.group(1)), int(range_match.group(2))
             episode_info_str = f"E{start_ep:02d}-E{end_ep:02d}"
             name_for_parsing = name_for_parsing.replace(range_match.group(0), ' ', 1)
-            break 
+            break
+            
+    season_match = re.search(r'\bS(\d{1,2})\b', name_for_parsing, re.IGNORECASE)
+    if season_match:
+        season_info_str = f"S{int(season_match.group(1)):02d}"
 
     # --- PASS 2: Parse with PTN ---
     ptn_name = name_for_parsing.replace('.', ' ').replace('_', ' ')
@@ -132,7 +134,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
 
     title_to_clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', title_to_clean)
     title_to_clean = re.sub(r'[#@$%&~+]', '', title_to_clean)
-    title_to_clean = re.sub(r'「.*?」', '', title_to_clean) 
+    title_to_clean = re.sub(r'「.*?」', '', title_to_clean)
     merged_junk_substrings = ['flix', 'movie', 'movies', 'moviez', 'filmy', 'movieshub']
     merged_junk_re = r'\b\w*(' + r'|'.join(merged_junk_substrings) + r')\w*\b'
     title_to_clean = re.sub(merged_junk_re, '', title_to_clean, flags=re.IGNORECASE)
@@ -142,9 +144,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
         'PROPER', 'iNTERNAL', 'Sample', 'Video', 'Dual', 'Audio', 'Multi', 'Hollywood',
         'New', 'Episode', 'Episodes', 'Combined', 'Complete', 'Chapter', 'PSA', 'JC', 'DIDAR', 'StarBoy',
         'Hindi', 'English', 'Tamil', 'Telugu', 'Kannada', 'Malayalam', 'Punjabi', 'Japanese', 'Korean',
-        'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5', '1080p', '720p', '576p', '480p', '360p', '240p', '4k', '3D',
-        'x264', 'x265', 'h264', 'h265', '10bit', 'HEVC', 'HDCAM', 'HDTC', 'HDRip', 'BluRay', 'WEB-DL', 
-        'Web-Rip', 'DVDRip', 'BDRip', 'DTS', 'AAC', 'AC3', 'E-AC-3', 'E-AC3', 'DD', 'DDP', 'HE-AAC'
+        'NF', 'AMZN', 'MAX', 'DSNP', 'ZEE5'
     ]
     junk_pattern_re = r'\b(' + r'|'.join(junk_words) + r')\b'
     cleaned_title = re.sub(junk_pattern_re, '', title_to_clean, flags=re.IGNORECASE)
@@ -153,7 +153,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     cleaned_title = re.sub(date_pattern, '', cleaned_title, flags=re.IGNORECASE)
     
     cleaned_title = re.sub(r'\s+', ' ', cleaned_title).strip()
-
+    
     if cleaned_title:
         title_words = cleaned_title.split()
         if len(title_words) > 2 and title_words[0].lower() == title_words[-1].lower():
@@ -161,45 +161,35 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
 
     if not cleaned_title: cleaned_title = initial_title
 
-    # --- PASS 5: IMDb Verification (with Caching) ---
+    # --- PASS 5: IMDb Verification ---
     if not year:
         found_years = re.findall(r'\b(19[89]\d|20[0-3]\d)\b', original_name)
         if found_years: year = found_years[0]
         
-    definitive_title, definitive_year = None, None
-    cache_key = f"{cleaned_title}_{year}" if year else cleaned_title
-    if cache is not None and cache_key in cache:
-        definitive_title, definitive_year = cache[cache_key]
-        logger.info(f"IMDb CACHE HIT for '{cache_key}'")
-    else:
-        logger.info(f"IMDb CACHE MISS for '{cache_key}'. Fetching from network...")
-        definitive_title, definitive_year = await get_definitive_title_from_imdb(cleaned_title)
-        if cache is not None:
-            cache[cache_key] = (definitive_title, definitive_year)
+    definitive_title, definitive_year = await get_definitive_title_from_imdb(cleaned_title)
 
     # --- PASS 6: Reconstruct and Return ---
     final_title = definitive_title if definitive_title else cleaned_title
     final_year = definitive_year if definitive_year else year
     
-    # Final episode formatting, prioritizing manually found range and handling PTN lists
     if not episode_info_str and episode:
         if isinstance(episode, list):
-            if len(episode) > 1:
-                episode_info_str = f"E{min(episode):02d}-E{max(episode):02d}"
-            elif episode:
-                episode_info_str = f"E{episode[0]:02d}"
+            episode_info_str = f"E{episode[0]:02d}"
         else:
             episode_info_str = f"E{episode:02d}"
             
     is_series = season is not None or episode_info_str != ""
+    if not season_info_str and season:
+        season_info_str = f"S{int(season):02d}"
+
     display_title = f"{final_title.strip()}" + (f" ({final_year})" if final_year else "")
         
     return {
-        "batch_title": f"{final_title} S{season:02d}" if is_series and season else final_title,
+        "batch_title": f"{final_title} {season_info_str}".strip(),
         "display_title": display_title.strip(),
         "year": final_year,
         "is_series": is_series,
-        "season_info": f"S{season:02d}" if season else "", 
+        "season_info": season_info_str, 
         "episode_info": episode_info_str,
         "quality_tags": quality_tags
     }
