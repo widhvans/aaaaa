@@ -111,7 +111,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     
     # --- PASS 0.5: HIGHEST-CONFIDENCE MERGED PATTERN (e.g., S06E01-10) ---
     # This pattern is extremely specific and should be checked first.
-    merged_pattern = re.compile(r'\bS(\d{1,2})\s?E(\d{1,4})\s?-\s?(\d{1,4})\b', re.IGNORECASE)
+    merged_pattern = re.compile(r'\bS(\d{1,2})\s?(?:E|EP)(\d{1,4})\s?-\s?(\d{1,4})\b', re.IGNORECASE)
     merged_match = merged_pattern.search(name_for_parsing)
     if merged_match:
         season_num = int(merged_match.group(1))
@@ -169,6 +169,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
             elif episode: episode_info_str = f"E{episode[0]:02d}"
         else: episode_info_str = f"E{episode:02d}"
     
+    # **FINAL FIX**: The year from the filename is the ONLY source of truth for the year.
     year_from_filename = parsed_info.get('year')
 
     # --- PASS 4: Aggressive Title Cleaning ---
