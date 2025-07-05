@@ -101,15 +101,21 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     # Remove common symbols and tags, but keep the text
     name = re.sub(r'[#@$%&_+]', '', name)
 
-    # Remove junk keywords
-    junk_patterns = [
-        r'Sample Video', r'Dual Audio', r'Hindi E\w*', r'Hindi', r'English', 'Tamil',
-        r'NF', r'Hollywood', r'Movie', r'O', # Added new junk words
-        r'HDCAM', r'HDTC', 'HDRip', 'BluRay', 'WEB-DL', 'Web-Rip', 'DVDRip',
-        r'\b(1080p|720p|480p)\b'
+    # Remove junk keywords using word boundaries for safety
+    junk_words = [
+        'Sample', 'Video', 'Dual', 'Audio', 'Hollywood', 'Movie', 'Punjabi',
+        'Hindi', 'English', 'Tamil', 'Telugu', 'Kannada', 'Malayalam',
+        'NF', 'AMZN', 'MAX', 'DSNP',
+        '1080p', '720p', '480p', '4k', '3D',
+        'x264', 'x265', 'h264', 'h265', '10bit', 'HEVC',
+        'HDCAM', 'HDTC', 'HDRip', 'BluRay', 'WEB-DL', 'Web-Rip', 'DVDRip', 'BDRip',
+        'DTS', 'AAC', 'AC3',
+        'E-AC-3', 'E-AC3',
+        'O' 
     ]
-    for pattern in junk_patterns:
-        name = re.sub(pattern, '', name, flags=re.IGNORECASE)
+    # This regex ensures we only match whole words
+    junk_pattern_re = r'\b(' + r'|'.join(junk_words) + r')\b'
+    name = re.sub(junk_pattern_re, '', name, flags=re.IGNORECASE)
 
     # Final cleanup of extra spaces
     name = re.sub(r'\s+', ' ', name).strip()
