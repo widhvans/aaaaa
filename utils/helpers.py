@@ -58,6 +58,8 @@ async def get_definitive_title_from_imdb(title_from_filename):
         return None, None
     try:
         loop = asyncio.get_event_loop()
+        # Log the exact title being searched
+        logger.info(f"Querying IMDb with cleaned title: '{title_from_filename}'")
         results = await loop.run_in_executor(None, lambda: ia.search_movie(title_from_filename, results=1))
         
         if not results:
@@ -69,7 +71,7 @@ async def get_definitive_title_from_imdb(title_from_filename):
         # Stricter similarity check
         similarity = fuzz.token_set_ratio(title_from_filename.lower(), imdb_title_raw.lower())
         
-        # If similarity is less than 90, reject the match.
+        # If similarity is less than 90, reject the match. This is a very strict check.
         if similarity < 90:
             logger.warning(f"IMDb mismatch REJECTED! Original: '{title_from_filename}', IMDb: '{imdb_title_raw}', Similarity: {similarity}%")
             return None, None
@@ -89,12 +91,25 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     A next-gen, multi-pass robust filename parser that preserves all metadata.
     """
     original_name = name
+    
+    # --- PASS 0: RADICAL PRE-CLEANING ---
+    # This removes junk from within brackets and parentheses BEFORE parsing
     name_for_parsing = name.replace('_', ' ').replace('.', ' ')
+    
+    # Remove any web addresses
+    name_for_parsing = re.sub(r'www\..*?\..*?(?=\s|$)', '', name_for_parsing, flags=re.IGNORECASE)
+    
+    # More aggressive bracket cleaning
+    name_for_parsing = re.sub(r'\[.*?\]', '', name_for_parsing).strip()
+    name_for_parsing = re.sub(r'\(.*?\)', '', name_for_parsing).strip()
+
 
     season_info_str = ""
     episode_info_str = ""
 
     # --- PASS 1: High-confidence combined Season/Episode patterns ---
+    # We use the original name for these patterns to not miss data
+    search_name_for_eps = name.replace('_', ' ').replace('.', ' ')
     combined_patterns = {
         r'\bS(\d{1,2})\s*EP?(\d{1,4})\s*[-–—\s]*EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
         r'\bS(\d{1,2})\s*EP?(\d{1,4})\s+to\s+EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
@@ -102,7 +117,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
         r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s+to\s+E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
     }
     for pattern, groups in combined_patterns.items():
-        match = re.search(pattern, name_for_parsing, re.IGNORECASE)
+        match = re.search(pattern, search_name_for_eps, re.IGNORECASE)
         if match:
             season_info_str = f"S{int(match.group(1)):02d}"
             episode_info_str = f"E{int(match.group(2)):02d}-E{int(match.group(3)):02d}"
@@ -111,7 +126,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
 
     # --- PASS 2: Independent Season and Episode patterns ---
     if not season_info_str:
-        season_match = re.search(r'\b(S|Season)\s*(\d{1,2})\b', name_for_parsing, re.IGNORECASE)
+        season_match = re.search(r'\b(S|Season)\s*(\d{1,2})\b', search_name_for_eps, re.IGNORECASE)
         if season_match:
             season_info_str = f"S{int(season_match.group(2)):02d}"
             name_for_parsing = name_for_parsing.replace(season_match.group(0), ' ', 1)
@@ -123,7 +138,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
             r'\[(\d{1,2})\s+To\s+(\d{1,2})\s+Eps\]',
         ]
         for pattern in episode_patterns:
-            match = re.search(pattern, name_for_parsing, re.IGNORECASE)
+            match = re.search(pattern, search_name_for_eps, re.IGNORECASE)
             if match:
                 start_ep = match.group(1)
                 end_ep = match.group(3) # Group 3 will be the end episode
@@ -131,9 +146,8 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
                 name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
                 break
 
-    # --- PASS 3: PTN as a fallback ---
-    ptn_name = name_for_parsing.replace('.', ' ').replace('_', ' ')
-    parsed_info = PTN.parse(ptn_name)
+    # --- PASS 3: PTN as a fallback on the pre-cleaned name ---
+    parsed_info = PTN.parse(name_for_parsing)
     
     initial_title = parsed_info.get('title', '').strip()
     if not season_info_str and parsed_info.get('season'):
@@ -147,18 +161,17 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     
     year = parsed_info.get('year')
 
-    # --- PASS 4: Aggressive Title Cleaning ---
+    # --- PASS 4: Aggressive Title Cleaning on the result of PTN ---
     title_to_clean = initial_title
     
     if year:
         title_to_clean = re.sub(r'\b' + str(year) + r'\b', '', title_to_clean)
 
     title_to_clean = re.sub(r'\bS\d{1,2}\b|\bE\d{1,4}\b', '', title_to_clean, flags=re.IGNORECASE)
-    title_to_clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', title_to_clean)
     
     junk_words = [
         'Ep', 'Eps', 'Episode', 'Episodes', 'Season', 'Series', 'South', 'Dubbed', 'Completed',
-        'Web', r'\d+Kbps', 'www', 'UNCUT', 'ORG', 'HQ', 'ESubs', 'MSubs', 'REMASTERED', 'REPACK',
+        'Web', r'\d+Kbps', 'UNCUT', 'ORG', 'HQ', 'ESubs', 'MSubs', 'REMASTERED', 'REPACK',
         'PROPER', 'iNTERNAL', 'Sample', 'Video', 'Dual', 'Audio', 'Multi', 'Hollywood',
         'New', 'Combined', 'Complete', 'Chapter', 'PSA', 'JC', 'DIDAR', 'StarBoy',
         'Hindi', 'English', 'Tamil', 'Telugu', 'Kannada', 'Malayalam', 'Punjabi', 'Japanese', 'Korean',
@@ -167,9 +180,11 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     junk_pattern_re = r'\b(' + r'|'.join(junk_words) + r')\b'
     cleaned_title = re.sub(junk_pattern_re, '', title_to_clean, flags=re.IGNORECASE)
     
-    cleaned_title = re.sub(r'\b\d{1,4}\b', '', cleaned_title)
-    cleaned_title = re.sub(r'\s+', ' ', cleaned_title).strip()
-
+    cleaned_title = re.sub(r'\b\d{1,4}\b', '', cleaned_title) # remove any remaining year-like numbers
+    cleaned_title = re.sub(r'[-_.]', ' ', cleaned_title) # replace separators with spaces
+    cleaned_title = re.sub(r'\s+', ' ', cleaned_title).strip() # normalize whitespace
+    
+    # If cleaning results in an empty string, fall back to the original name's base
     if not cleaned_title: cleaned_title = " ".join(original_name.split('.')[:-1])
 
     # --- PASS 5: IMDb Verification (with Caching) ---
@@ -183,12 +198,13 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
         definitive_title, definitive_year = cache[cache_key]
         logger.info(f"IMDb CACHE HIT for '{cache_key}'")
     else:
-        logger.info(f"IMDb CACHE MISS for '{cache_key}'. Fetching from network...")
+        # Use the aggressively cleaned title for the IMDb search
         definitive_title, definitive_year = await get_definitive_title_from_imdb(cleaned_title)
         if cache is not None:
             cache[cache_key] = (definitive_title, definitive_year)
 
     # --- PASS 6: Reconstruct and Return ---
+    # Use the definitive title from IMDb if found, otherwise use our cleaned title
     final_title = definitive_title if definitive_title else cleaned_title.title()
     final_year = definitive_year if definitive_year else year
     
