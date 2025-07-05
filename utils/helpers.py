@@ -112,17 +112,16 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     episode_info_str = ""
 
     # --- NEW PASS 1: High-confidence numeric range episode detection ---
-    # Looks for patterns like [09 To 12 Eps], Ep.01-05, or standalone 01-05
-    search_name_for_eps = name.replace('_', '.').replace(' ', '.')
+    # Looks for patterns like [09 To 12 Eps], [01-12] etc.
+    search_name_for_eps = name.replace('_', ' ').replace('.', ' ')
+    # This pattern is now smarter, handling Ep.01-05 and similar cases
     range_patterns = [
-        # Matches [09 To 12 Eps], [09-12], [09 - 12]
-        r'\[\s*(\d{1,4})\s*(?:to|-|–|—)\s*(\d{1,4})\s*(?:Eps?)?\s*\]',
-        # Matches E01-E12, EP01-12, Episode.01-12, Ep.01-05
-        r'\b(?:E|EP|Ep|Episode)s?\.?\s*(\d{1,4})\s*(?:to|-|–|—|\.)\s*(\d{1,4})\b',
-        # Matches a range directly after a season tag, e.g., S01.01-12
-        r'\bS(\d{1,2})\.?(\d{1,4})\s*(?:to|-|–|—|\.)\s*(\d{1,4})\b',
-        # Matches standalone increasing ranges like 01-05 or 01.05 (less specific, so last)
-        r'\b(\d{2})[-.](\d{2})\b'
+        # Matches [09 To 12 Eps], [09-12], Ep.01-05, 01-05
+        r'\b(?:E|Ep|Episode)s?[\s.]?(\d{1,4})[\s.]?(?:to|-|–|—)[\s.]?(\d{1,4})\b',
+        # Matches [ 01-12 ]
+        r'\[\s*(\d{1,4})\s*(?:to|-|–|—)\s*(\d{1,4})\s*\]',
+        # Matches a range directly after a season tag, e.g., S01 01-12
+        r'\bS(\d{1,2})[\s.]?(\d{1,4})\s*(?:to|-|–|—)\s*(\d{1,4})\b'
     ]
     for pattern in range_patterns:
         match = re.search(pattern, search_name_for_eps, re.IGNORECASE)
@@ -138,8 +137,8 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
             # Ensure it's an increasing range
             if int(start_ep) < int(end_ep):
                 episode_info_str = f"E{int(start_ep):02d}-E{int(end_ep):02d}"
-                name_for_parsing = name_for_parsing.replace(match.group(0).replace('.', ' '), ' ', 1)
-                name_for_ptn = name_for_ptn.replace(match.group(0).replace('.', ' '), ' ', 1)
+                name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
+                name_for_ptn = name_for_ptn.replace(match.group(0), ' ', 1)
                 break 
 
     # --- PASS 2: High-confidence combined Season/Episode patterns (if not found above) ---
@@ -147,6 +146,8 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
         combined_patterns = {
             r'\bS(\d{1,2})\s*EP?(\d{1,4})\s*[-–—\s]*EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
             r'\bS(\d{1,2})\s*EP?(\d{1,4})\s+to\s+EP?(\d{1,4})\b': ('season', 'start_ep', 'end_ep'),
+            r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s*[-–—]\s*E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
+            r'\[\s*S(\d{1,2})\s*E?P?\s*(\d{1,4})\s+to\s+E?P?(\d{1,4})\s*\]': ('season', 'start_ep', 'end_ep'),
         }
         for pattern, groups in combined_patterns.items():
             match = re.search(pattern, search_name_for_eps, re.IGNORECASE)
@@ -154,8 +155,8 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
                 if not season_info_str:
                     season_info_str = f"S{int(match.group(1)):02d}"
                 episode_info_str = f"E{int(match.group(2)):02d}-E{int(match.group(3)):02d}"
-                name_for_parsing = name_for_parsing.replace(match.group(0).replace('.', ' '), ' ', 1)
-                name_for_ptn = name_for_ptn.replace(match.group(0).replace('.', ' '), ' ', 1)
+                name_for_parsing = name_for_parsing.replace(match.group(0), ' ', 1)
+                name_for_ptn = name_for_ptn.replace(match.group(0), ' ', 1)
                 break
 
     # --- PASS 3: Independent Season and Single Episode patterns ---
@@ -163,8 +164,8 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
         season_match = re.search(r'\b(S|Season)\s*(\d{1,2})\b', search_name_for_eps, re.IGNORECASE)
         if season_match:
             season_info_str = f"S{int(season_match.group(2)):02d}"
-            name_for_parsing = name_for_parsing.replace(season_match.group(0).replace('.', ' '), ' ', 1)
-            name_for_ptn = name_for_ptn.replace(season_match.group(0).replace('.', ' '), ' ', 1)
+            name_for_parsing = name_for_parsing.replace(season_match.group(0), ' ', 1)
+            name_for_ptn = name_for_ptn.replace(season_match.group(0), ' ', 1)
 
     # --- PASS 4: PTN as a fallback on the pre-cleaned name ---
     parsed_info = PTN.parse(name_for_ptn)
