@@ -85,8 +85,9 @@ async def get_definitive_title_from_imdb(title_from_filename):
         await loop.run_in_executor(None, lambda: ia.update(movie, info=['main']))
         
         imdb_title = movie.get('title')
-        # We no longer use the year from IMDb to avoid conflicts.
-        return imdb_title, None
+        imdb_year = movie.get('year')
+        logger.info(f"IMDb match ACCEPTED for '{title_from_filename}': '{imdb_title} ({imdb_year})'")
+        return imdb_title, imdb_year
 
     except Exception as e:
         logger.error(f"Error fetching data from IMDb for '{title_from_filename}': {e}")
@@ -108,7 +109,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     season_info_str = ""
     episode_info_str = ""
     
-    # --- PASS 1: HIGHEST-CONFIDENCE MERGED PATTERN (e.g., S06E01-10) ---
+    # --- PASS 0.5: HIGHEST-CONFIDENCE MERGED PATTERN (e.g., S06E01-10) ---
     # This pattern is extremely specific and should be checked first.
     merged_pattern = re.compile(r'\bS(\d{1,2})\s?E(\d{1,4})\s?-\s?(\d{1,4})\b', re.IGNORECASE)
     merged_match = merged_pattern.search(name_for_parsing)
@@ -124,15 +125,13 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
             name_for_parsing = name_for_parsing.replace(merged_match.group(0), ' ', 1)
             name_for_ptn = name_for_ptn.replace(merged_match.group(0), ' ', 1)
 
-    # --- PASS 2: High-confidence numeric range episode detection ---
+    # --- NEW PASS 1: High-confidence numeric range episode detection ---
     if not episode_info_str:
-        # Use a version of the name with dots to catch more formats
         search_name_for_eps = name.replace('_', '.').replace(' ', '.')
         range_patterns = [
-            # Matches E01-05, Ep.01-05, E 01 to 05
             r'\b(?:E|Ep|Episode)s?\.?\s?(\d{1,4})\.?\s?(?:to|-|–|—)\.?\s?(\d{1,4})\b',
-            # Matches S01.E01-E05
-            r'\bS(\d{1,2})\.?\s?E(\d{1,4})\.?\s?(?:to|-|–|—)\.?\s?E?(\d{1,4})\b'
+            r'\[\s*(\d{1,4})\s*(?:to|-|–|—)\s*(\d{1,4})\s*\]',
+            r'\bS(\d{1,2})\.?\s?(\d{1,4})\.?\s?(?:to|-|–|—)\.?\s?(\d{1,4})\b'
         ]
         for pattern in range_patterns:
             match = re.search(pattern, search_name_for_eps, re.IGNORECASE)
@@ -151,13 +150,13 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
                     name_for_ptn = name_for_ptn.replace(match.group(0), ' ', 1)
                     break 
 
-    # --- PASS 3: Independent Season and Single Episode patterns ---
+    # --- PASS 2: Independent Season and Single Episode patterns ---
     if not season_info_str:
         season_match = re.search(r'\b(S|Season)\s*(\d{1,2})\b', name_for_parsing, re.IGNORECASE)
         if season_match:
             season_info_str = f"S{int(season_match.group(2)):02d}"
 
-    # --- PASS 4: PTN as a fallback on the pre-cleaned name ---
+    # --- PASS 3: PTN as a fallback on the pre-cleaned name ---
     parsed_info = PTN.parse(name_for_ptn)
     
     initial_title = parsed_info.get('title', '').strip()
@@ -170,10 +169,9 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
             elif episode: episode_info_str = f"E{episode[0]:02d}"
         else: episode_info_str = f"E{episode:02d}"
     
-    # **FINAL FIX**: The year from the filename is the ONLY source of truth for the year.
     year_from_filename = parsed_info.get('year')
 
-    # --- PASS 5: Aggressive Title Cleaning ---
+    # --- PASS 4: Aggressive Title Cleaning ---
     title_to_clean = initial_title
     if year_from_filename:
         title_to_clean = re.sub(r'\b' + str(year_from_filename) + r'\b', '', title_to_clean)
@@ -197,10 +195,10 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     
     if not cleaned_title: cleaned_title = " ".join(original_name.split('.')[:-1])
 
-    # --- PASS 6: IMDb Verification (for title only) ---
+    # --- PASS 5: IMDb Verification (for title only) ---
     definitive_title, _ = await get_definitive_title_from_imdb(cleaned_title)
 
-    # --- PASS 7: Reconstruct and Return ---
+    # --- PASS 6: Reconstruct and Return ---
     final_title = definitive_title if definitive_title else cleaned_title.title()
     final_year = year_from_filename
     is_series = bool(season_info_str or episode_info_str)
