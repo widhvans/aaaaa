@@ -63,8 +63,11 @@ async def get_poster(query: str, year: str = None):
     The definitive 'waterfall' poster finder. It tries every possible combination
     of truncated queries and sources until it gets a match.
     """
-    search_queries = generate_search_queries(query)
-    logger.info(f"Waterfall Search: Starting for '{query}'. Queries: {search_queries}")
+    # Final guardrail: Sanitize the query to remove stray characters like quotes
+    sanitized_query = query.replace('"', '').strip()
+    
+    search_queries = generate_search_queries(sanitized_query)
+    logger.info(f"Waterfall Search: Starting for '{sanitized_query}'. Queries: {search_queries}")
 
     for sq in search_queries:
         logger.info(f"Waterfall Search: Trying query '{sq}'...")
