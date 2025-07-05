@@ -12,7 +12,7 @@ from config import Config
 from database.db import (
     get_user, save_file_data, get_post_channel, get_index_db_channel
 )
-from utils.helpers import create_post, get_batch_key_from_filename, notify_and_remove_invalid_channel
+from utils.helpers import create_post, clean_and_parse_filename, notify_and_remove_invalid_channel
 from thefuzz import fuzz
 
 # Setup logging
@@ -103,19 +103,37 @@ class Bot(Client):
                 if dashboard_msg: await self.send_with_protection(dashboard_msg.delete)
                 return
 
-            # Milestone 1: Fast grouping using new keyword logic
-            logical_batches = {}
             if dashboard_msg:
                 await self.send_with_protection(dashboard_msg.edit_text, f"⏳ **Step 1/2:** Analyzing and grouping `{len(messages)}` files...")
 
-            for msg in messages:
-                filename = getattr(msg, msg.media.value).file_name
-                batch_key = get_batch_key_from_filename(filename) 
-                if batch_key not in logical_batches:
-                    logical_batches[batch_key] = []
-                logical_batches[batch_key].append(msg)
+            # Concurrently get all canonical info for each file, using the cache
+            tasks = [clean_and_parse_filename(getattr(msg, msg.media.value).file_name, self.imdb_cache) for msg in messages]
+            file_infos = await asyncio.gather(*tasks)
 
-            # Milestone 2: Processing with ETA
+            # New powerful grouping logic
+            logical_batches = {}
+            for i, info in enumerate(file_infos):
+                if not info or not info.get("batch_title"):
+                    continue
+                
+                current_msg = messages[i]
+                current_title = info["batch_title"]
+                
+                best_match_key = None
+                highest_similarity = 0
+                SIMILARITY_THRESHOLD = 92 # High threshold for accuracy
+
+                for existing_key in logical_batches.keys():
+                    similarity = fuzz.token_set_ratio(current_title, existing_key)
+                    if similarity > highest_similarity:
+                        highest_similarity = similarity
+                        best_match_key = existing_key
+                        
+                if highest_similarity > SIMILARITY_THRESHOLD:
+                    logical_batches[best_match_key].append(current_msg)
+                else:
+                    logical_batches[current_title] = [current_msg]
+
             total_batches = len(logical_batches)
             estimated_time = total_batches * 8 
             if dashboard_msg:
@@ -130,17 +148,16 @@ class Bot(Client):
                 return
 
             processed_count = 0
-            for _, batch_messages in logical_batches.items():
+            for batch_title, batch_messages in logical_batches.items():
                 processed_count += 1
                 
-                # The slow step, now optimized with caching
                 posts_to_send = await create_post(self, user_id, batch_messages, self.imdb_cache)
                 
                 if dashboard_msg:
                     remaining_eta = (total_batches - processed_count) * 8
                     await self.send_with_protection(dashboard_msg.edit_text, f"**Processing...**\n\n"
                                                                           f"✅ Batch {processed_count-1}/{total_batches} posted.\n"
-                                                                          f"⏳ Posting batch {processed_count}/{total_batches}...\n"
+                                                                          f"⏳ Posting batch '{batch_title}'...\n"
                                                                           f"(Est. remaining: ~{remaining_eta} seconds)")
 
                 for post in posts_to_send:
@@ -177,11 +194,9 @@ class Bot(Client):
                 self.stream_channel_id = await get_index_db_channel(user_id) or self.owner_db_channel
                 if not self.stream_channel_id: continue
 
-                # Forward file to owner's DB channel
                 copied_message = await self.send_with_protection(message.copy, self.owner_db_channel)
                 if not copied_message: continue
-
-                # Rate limiting logic for forwarding
+                
                 forward_counter += 1
                 if forward_counter % 5 == 0:
                     logger.info("Forwarded 5 files, sleeping for 3 seconds to avoid flood wait...")
