@@ -73,34 +73,47 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     Robustly parses filenames with aggressive cleaning and caching for IMDb lookups.
     """
     original_name = name
+
+    # Stage 1: Initial Standard Cleaning
+    # Work with name before extension and replace separators
+    name = ".".join(name.split('.')[:-1]) if '.' in name else name
+    name = name.replace('.', ' ').replace('_', ' ').strip()
     
-    # Stage 1: Aggressive pre-cleaning
+    # Stage 2: Aggressive Junk Removal
+    # Remove all content within brackets: (), [], {}
+    name = re.sub(r'[\(\[\{].*?[\)\]\}]', '', name)
+    
+    # Remove common symbols and tags, but keep the text
+    name = re.sub(r'[#@$%&_+]', '', name)
+
+    # Remove junk keywords
     junk_patterns = [
-        r'Sample Video', r'Dual Audio', r'Hindi \+ E\w*', r'Hindi', r'English',
+        r'Sample Video', r'Dual Audio', r'Hindi E\w*', r'Hindi', r'English', 'Tamil',
         r'HDCAM', r'HDTC', 'HDRip', 'BluRay', 'WEB-DL', 'Web-Rip', 'DVDRip',
         r'\b(1080p|720p|480p)\b'
     ]
     for pattern in junk_patterns:
         name = re.sub(pattern, '', name, flags=re.IGNORECASE)
 
-    name = re.sub(r'(@|\[@)\S+', '', name)
-    name = re.sub(r'\[.*?\]', '', name)
-    name = re.sub(r'\(.*?\)', '', name) # Also remove content in parentheses which often contains junk
-    name = ".".join(original_name.split('.')[:-1]) if '.' in original_name else original_name # Work with name before extension
-    name = name.replace('.', ' ').replace('_', ' ').strip()
+    # Final cleanup of extra spaces
+    name = re.sub(r'\s+', ' ', name).strip()
     
-    # Stage 2: Use PTN on a semi-cleaned name
+    # Stage 3: Use PTN on the fully cleaned name
     parsed_info = PTN.parse(name)
     initial_title = parsed_info.get('title', '').strip()
 
-    # Stage 3: Post-cleaning and year de-duplication
+    # Stage 4: Post-cleaning and year de-duplication
     initial_title = re.sub(r'^\W*\d+mm\W*', '', initial_title, flags=re.IGNORECASE).strip()
+    # Use original_name for year finding as cleaning might have removed it
     all_years = re.findall(r'\b(19[89]\d|20[0-2]\d)\b', original_name)
     year = all_years[0] if all_years else parsed_info.get('year')
 
-    if not initial_title: return None
+    if not initial_title:
+        # Fallback if cleaning was too aggressive, parse the original name
+        initial_title = PTN.parse(original_name).get('title', '')
+        if not initial_title: return None # If still no title, we can't proceed
 
-    # Stage 4: IMDb Verification with Caching
+    # Stage 5: IMDb Verification with Caching
     definitive_title, definitive_year = None, None
     cache_key = f"{initial_title}_{year}" if year else initial_title
     if cache is not None and cache_key in cache:
@@ -172,7 +185,6 @@ async def create_post(client, user_id, messages, cache: dict):
     base_caption_header = f"🎬 **{primary_display_title}**"
     post_poster = await get_poster(first_info['batch_title'], first_info['year']) if user.get('show_poster', True) else None
     
-    # This is the crucial part: It correctly creates URL buttons.
     footer_buttons = user.get('footer_buttons', [])
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], url=btn['url'])] for btn in footer_buttons]) if footer_buttons else None
     
