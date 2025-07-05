@@ -118,6 +118,7 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
             r'\[\s*(?:E|EP)?\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\s*\]',
             r'\[\s*(?:E|EP)?\s*(\d{1,4})\s+to\s+(\d{1,4})\s*(?:Eps)?\s*\]',
             r'\b(?:E|EP|Ep|Episode)s?[\. ]\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})\b',
+            r'\[(\d{1,2})\s+To\s+(\d{1,2})\s+Eps\]',
         ]
         for pattern in episode_patterns:
             match = re.search(pattern, name_for_parsing, re.IGNORECASE)
