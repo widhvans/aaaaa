@@ -112,15 +112,15 @@ async def clean_and_parse_filename(name: str, cache: dict = None):
     episode_info_str = ""
 
     # --- NEW PASS 1: High-confidence numeric range episode detection ---
-    # Looks for patterns like [09 To 12 Eps] or [01-12] etc.
+    # Looks for patterns like [09 To 12 Eps], [09 - 12], 01-05, Ep.01-05 etc.
     search_name_for_eps = name.replace('_', ' ').replace('.', ' ')
     range_patterns = [
-        # Matches [09 To 12 Eps], [09 - 12]
-        r'\[\s*(\d{1,4})\s*(?:to|-|–|—)\s*(\d{1,4})\s*(?:Eps?)?\s*\]',
-        # Matches E01-E12, EP01-12, Episode 01 to 12
-        r'\b(?:E|EP|Episode)s?[\s.]?(\d{1,4})\s*(?:to|-|–|—)\s*(\d{1,4})\b',
-        # Matches a range directly after a season tag, e.g., S01 01-12
-        r'\bS(\d{1,2})[\s.]?(\d{1,4})\s*(?:to|-|–|—)\s*(\d{1,4})\b'
+        # Matches [09 To 12 Eps], [09-12], [09.12]
+        r'\[\s*(\d{1,4})\s*(?:to|-|–|—|\.)\s*(\d{1,4})\s*(?:Eps?)?\s*\]',
+        # Matches E01-E12, EP01-12, Episode 01 to 12, Ep.01-05
+        r'\b(?:E|EP|Ep|Episode)s?[\s.]?(\d{1,4})\s*(?:to|-|–|—|\.)\s*(\d{1,4})\b',
+        # Matches a range directly after a season tag, e.g., S01 01-12, S01.01-12
+        r'\bS(\d{1,2})[\s.]?(\d{1,4})\s*(?:to|-|–|—|\.)\s*(\d{1,4})\b'
     ]
     for pattern in range_patterns:
         match = re.search(pattern, search_name_for_eps, re.IGNORECASE)
