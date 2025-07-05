@@ -5,7 +5,7 @@ from pyrogram.errors import UserNotParticipant, MessageNotModified, ChatAdminReq
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from config import Config
 from database.db import add_user, get_file_by_unique_id, get_user, is_user_verified, claim_verification_for_file
-from utils.helpers import get_main_menu
+from utils.helpers import get_main_menu, simple_clean_filename
 from features.shortener import get_shortlink
 
 logger = logging.getLogger(__name__)
@@ -30,10 +30,11 @@ async def handle_private_file(client, message):
         keyboard = InlineKeyboardMarkup(buttons)
         
         # Use the correct attributes from the media object
+        file_name = getattr(media, "file_name", "unknown.file")
         await client.send_cached_media(
             chat_id=message.chat.id,
             file_id=media.file_id,
-            caption=f"`{media.file_name}`",
+            caption=f"`{file_name}`",
             reply_markup=keyboard,
             quote=True
         )
@@ -59,7 +60,8 @@ async def send_file(client, requester_id, owner_id, file_unique_id):
         keyboard = InlineKeyboardMarkup(buttons)
         
         file_name_raw = file_data.get('file_name', 'N/A')
-        file_name_cleaned = re.sub(r'(@|\[@)\S+', '', file_name_raw).strip()
+        # Use the new simple cleaner for a consistently clean filename
+        file_name_cleaned = simple_clean_filename(file_name_raw)
         
         filename_part = ""
         filename_url = owner_settings.get("filename_url") if owner_settings else None
